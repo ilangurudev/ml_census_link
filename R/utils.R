@@ -1,4 +1,5 @@
-pacman::p_load(tidyverse, stringdist, phonics, glue, caret, rebus)
+pacman::p_load(tidyverse, stringdist, phonics, glue, caret, 
+               rebus, fs, ModelMetrics, MLmetrics, plotROC)
 
 # preprocessing ------------------------------------------------------
 
@@ -17,50 +18,26 @@ extract_major_token <- function(x){
     })
 }
 
-preprocess_data <- function(df){
+preprocess_data <- function(df, year_a = T){
   
-  df %>%
-    select(starts_with("id_"), fname, lname, bplstr, birth_year, gender_code, race_code, 
-           household_id, relate = relstr) %>% 
-    mutate(fname_longest = extract_major_token(fname),
+  df  %>% 
+    select(starts_with("id"), 
+           fname = first_name, lname = last_name, 
+           birth_age, gender_code, race_code, 
+           voter_reg_num, name_suffix) %>% 
+    mutate(name_suffix = if_else(is.na(name_suffix), "", name_suffix),
+           lname = glue("{lname} {name_suffix}") %>% str_trim(),
+           fname_longest = extract_major_token(fname),
            lname_longest = extract_major_token(lname),
-           birth_year = as.integer(birth_year),
-           age = 1940 - birth_year,
-           race_code = str_sub(race_code, 1, 1)) %>% 
+           year_a = year_a,
+           birth_year = ifelse(year_a, 2013 - birth_age, 2017 - birth_age)) %>% 
+    select(-name_suffix, -year_a, -birth_age) %>% 
     add_count(fname_longest) %>% 
     rename(ffreq = n) %>% 
     add_count(lname_longest) %>% 
     rename(lfreq = n) %>% 
-    # group_by() %>% 
-    add_count(fname, lname, bplstr, birth_year, gender_code, race_code) %>% 
-    filter(n == 1) %>% 
-    select(-n) %>% 
-    add_count(household_id) %>% 
-    filter(n < 30) %>% 
-    select(-n)
-}
-
-preprocess_data_ed <- function(df){
-  
-  df %>%
-    select(starts_with("id_"), fname, lname, bplstr, 
-           birth_year, gender_code, race_code, household_id, relate = relstr, ed2) %>% 
-    mutate(fname_longest = extract_major_token(fname),
-           lname_longest = extract_major_token(lname),
-           birth_year = as.integer(birth_year),
-           age = 1940 - birth_year,
-           race_code = str_sub(race_code, 1, 1)) %>% 
-    add_count(fname_longest) %>% 
-    rename(ffreq = n) %>% 
-    add_count(lname_longest) %>% 
-    rename(lfreq = n) %>% 
-    # group_by() %>% 
-    add_count(fname, lname, bplstr, birth_year, gender_code, race_code) %>% 
-    filter(n == 1) %>% 
-    select(-n) %>% 
-    add_count(household_id) %>% 
-    filter(n < 30) %>% 
-    select(-n)
+    mutate(ffreq = scale(ffreq),
+           lfreq = scale(lfreq))
 }
 
 # views -----------------------------------------------------------------
@@ -282,6 +259,22 @@ extract_one_to_one <- function(df, field){
 }
 
 
+read_data <- function(path){
+  df_var <- 
+    path %>% 
+    path_file() %>%  
+    str_replace(or(literal(".csv"), literal(".rds")), "")
+  
+  if(path %>% str_detect("csv")){
+    assign(df_var, read_csv(path), parent.frame())
+  } else {
+    assign(df_var, read_rds(path), parent.frame())
+  }
+  
+}
+
+
+
 # predict -----------------------------------------------------------------
 
 predict_links_raw <- function(model, df_pair_vector){
@@ -322,7 +315,6 @@ links_1to1 <- function(df_preds_aug){
          match_prob, conf, match_pred, everything())
   
 }
-
 
 # postprocessing ----------------------------------------------------------
 
@@ -430,3 +422,21 @@ link_datasets <- function(df_a, df_b, model){
 summarise_results <- function(){
   
 }
+
+
+
+
+
+calculate_hamming_fields <- function(df){
+  equality_vector <- 
+    df %>% 
+    mutate(fname_equal = fname_a == fname_b,
+           lname_equal = lname_a == lname_b,
+           birth_year_equal = birth_year_a == birth_year_b,
+           gender_code_equal = gender_code_a == gender_code_b,
+           race_code_equal = race_code_a == race_code_b) %>% 
+    select(contains("equal")) %>% 
+    df_to_vector()
+  sum(equality_vector * weight_vector)
+}
+

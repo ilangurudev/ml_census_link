@@ -1,13 +1,13 @@
 source("R/utils.R")
 
-df_pairs_feature <- 
-  df_pairs %>% 
-  add_feature_vector() %>% 
-  select(match, contains("metric")) %>% 
-  mutate(match = as.factor(match)) %>% 
-  sample_n(size(nrow(.))) %>% 
-  as.data.frame()
+read_data("data/generated/df_pairs_feature.csv")
+read_data("data/generated/df_pairs.csv")
 
+df_pairs_feature <- 
+  df_pairs_feature %>% 
+  mutate(match = match %>% as.character() %>% as.factor())
+
+set.seed(1)
 train_indices <- sample(1:nrow(df_pairs_feature), size = floor(nrow(df_pairs_feature)*0.85))
 
 df_train <- 
@@ -18,6 +18,7 @@ df_test <-
   bind_cols(df_pairs) %>% 
   .[-train_indices,]
 
+set.seed(2)
 (model_rf <-
     train(match ~ .,
           df_train,
@@ -28,11 +29,12 @@ df_test <-
           ntree = 350,
           method = "rf"))
 
-readr::write_rds(model_rf, "data/models/yancey.rds")
+# readr::write_rds(model_rf, "data/models/model_rf-grid_yancey-train_features-all.rds")
 
-varImp(model_rf) %>% plot()
+read_data("data/models/model_rf-grid_yancey-train_features-all.rds")
 
-confusionMatrix(model_rf)
+
+
 
 df_pairs_feature_imp <-
   df_pairs_feature %>% 
@@ -41,71 +43,76 @@ df_pairs_feature_imp <-
 df_train_imp <- 
   df_pairs_feature_imp[train_indices, ]
 
-(model_rf_imp <-
+set.seed(2)
+
+(model_yancey_imp <-
     train(match ~ .,
           df_train_imp,
           trControl = trainControl(method = "cv", number = 10),
-          tuneGrid = expand.grid(.mtry = seq(2, 12, 1)),
+          tuneGrid = expand.grid(.mtry = 2),
+          # mtry = 2,
           importance = TRUE,
           keep.forest= TRUE,
           ntree = 350,
           method = "rf"))
 
-varImp(model_rf_imp) %>% plot()
+varImp(model_yancey_imp) %>% plot()
 
-confusionMatrix(model_rf_imp)
+# write_rds(model_yancey_imp, "data/models/model_rf-mtry2_yancey-train_features-imp.rds")
 
-readr::write_rds(model_rf, "data/models/yancey_imp.rds")
+read_data("data/models/model_rf-mtry2_yancey-train_features-imp.rds")
 
-# df_valid <- 
-#   df_valid_all %>% 
-#   select(match, contains("metric")) %>% 
-#   mutate(match = as.factor(match)) %>% 
-#   as.data.frame()
+models <- objects(pattern = "^model_")
+df_model_results <- 
+  tibble(model_name = models) %>% 
+  mutate(model = map(model_name, get),
+         results = map(model, evaluate_model, df_test = df_test),
+         metrics = map(results, ~.x$metrics$df_metric_table))
+
+df_model_results %>% 
+  select(model_name, metrics) %>% 
+  unnest(metrics) %>% 
+  filter(metric %in% c("accuracy", "precision", "recall"))
+
+
+
+# df_preds <- 
+#   predict(model_yancey_imp, df_test, type = "prob") %>% 
+#   as.tibble()
 # 
-df_preds <- 
-  predict(model_rf, df_test, type = "prob") %>% 
-  as.tibble()
-
-names(df_preds) <- c("unmatch_prob", "match_prob")
-
-df_preds_aug <- 
-  df_preds %>% 
-  mutate(pair_id = df_test$pair_id,
-         conf = abs(match_prob - 0.5)*2,
-         match_pred = as.integer(match_prob >= 0.5)) %>% 
-  left_join(df_test, by = "pair_id") %>% 
-  mutate(match = as.integer(match)) %>% 
-  vectors_to_pairs() %>% 
-  arrange(conf, pair_id) %>% 
-  select(pair_id, 
-         fname, lname, gender_code, race_code, birth_year, 
-         match_prob, conf, match_pred, match, everything())
-
-# wrong but low confidence 
-df_preds_aug %>% filter(match != match_pred) %>% arrange(conf) %>% View()
-
-# wrong but high confidence 
-df_preds_aug %>% filter(match != match_pred) %>% arrange(desc(conf)) %>% View()
-
-df_preds_aug %>% arrange(conf) %>% View()
-
-mean(as.integer(df_preds$match_prob >=0.5) == as.integer(df_valid_all$match))
-
-View(df_preds)
+# names(df_preds) <- c("unmatch_prob", "match_prob")
+# 
+# df_preds_aug <- 
+#   df_preds %>% 
+#   mutate(pair_id = df_test$pair_id,
+#          conf = abs(match_prob - 0.5)*2,
+#          match_pred = 
+#                   (match_prob >= 0.5) %>% 
+#                   as.integer() %>% 
+#                   as.character() %>% 
+#                   as.factor()) %>% 
+#   left_join(df_test, by = "pair_id") %>% 
+#   vectors_to_pairs() %>% 
+#   arrange(conf, pair_id) %>% 
+#   select(pair_id, 
+#          fname, lname, gender_code, race_code, birth_year, 
+#          match_prob, conf, match_pred, match, everything())
+# 
+# # wrong but low confidence 
+# df_preds_aug %>% filter(match != match_pred) %>% arrange(conf) %>% View()
+# 
+# # wrong but high confidence 
+# df_preds_aug %>% filter(match != match_pred) %>% arrange(desc(conf)) %>% View()
+# 
+# df_preds_aug %>% arrange(conf) %>% View()
+# 
+# accuracy <- mean(as.integer(df_preds$match_prob >=0.5) == df_test$match)
+# # accuracy <- mean(as.integer(df_preds$match_prob >=0.5) == df_test$match)
+# 
+# View(df_preds)
 
 
 model_rf$finalModel$importance %>% as.tibble() %>% 
   select(MeanDecreaseAccuracy, MeanDecreaseGini) %>% 
   mutate(feature = row.names(model_rf$finalModel$importance)) %>% 
   arrange(desc(MeanDecreaseAccuracy))
-
-
-
-
-df_labs_all %>% 
-  filter(match == 1) %>% 
-  arrange(id_30) %>% 
-  add_count(id_30) %>% 
-  filter(n > 1) %>% 
-  View()
