@@ -1,5 +1,6 @@
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, 
-               rebus, fs, ModelMetrics, MLmetrics, plotROC)
+               rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
+               doParallel)
 
 # preprocessing ------------------------------------------------------
 

@@ -1,6 +1,3 @@
-model <- model_yancey_imp
-df_test
-
 evaluate_model <- function(model, df_test){
   calculate_metrics(predict_model(model, df_test), df_test)
 }
@@ -10,9 +7,15 @@ predict_model <- function(model, df_test){
     predict(model, df_test, type = "prob") %>% 
     as.tibble()
   
-  names(df_preds) <- c("unmatch_prob", "match_prob")
+  names_preds <- names(df_preds)
   
-  df_preds
+  if(length(names_preds) == 1){
+    tibble(match_prob = df_preds %>% pull(1))
+  } else {
+    names(df_preds) <- names_preds %>% str_c("_prob")
+    df_preds
+  }
+  
 }
 
 calculate_metrics <- function(df_preds, df_test){
@@ -20,17 +23,14 @@ calculate_metrics <- function(df_preds, df_test){
     df_preds %>% 
     mutate(pair_id = df_test$pair_id,
            conf = abs(match_prob - 0.5)*2,
-           match_pred = 
-             (match_prob >= 0.5) %>% 
-             as.integer() %>% 
-             as.character() %>% 
-             as.factor()) %>% 
+           match_pred = ifelse(match_prob >= 0.5, "match", "unmatch") %>% 
+             factor(levels = c("match", "unmatch"))) %>% 
     left_join(df_test, by = "pair_id") %>%
     arrange(conf, pair_id) %>% 
     select(pair_id, 
            fname_a, fname_b, lname_a, lname_b, birth_year_a, birth_year_b, 
            gender_code_a, gender_code_b, race_code_a, race_code_b,
-           match_pred, match, conf, unmatch_prob, match_prob, everything())
+           match_pred, match, conf, match_prob, everything())
   
   
   df_preds_aug_pairs <- 
@@ -79,9 +79,9 @@ calculate_metrics <- function(df_preds, df_test){
   )
   
   metrics <- list()
-  
-  match <- df_preds_aug$match %>% as.character() %>% as.integer()
-  match_pred <- df_preds_aug$match_pred %>% as.character() %>% as.integer()
+
+  match <- ifelse(as.character(df_preds_aug$match) == "match", 1, 0) 
+  match_pred <- ifelse(as.character(df_preds_aug$match_pred) == "match", 1, 0)
   pred_prob <- df_preds_aug$match_prob
   
   metrics$accuracy <- Accuracy(match, match_pred)
@@ -96,6 +96,7 @@ calculate_metrics <- function(df_preds, df_test){
   metrics$recall <- recall(match, match_pred)
   metrics$auc <- auc(match, pred_prob)
   metrics$gini <- Gini(match, pred_prob)
+  metrics$n_wrong <- nrow(results$confidence$most_confident_mistakes)/2
   
   metrics$df_metric_table <-
     metrics %>% 
@@ -110,7 +111,7 @@ calculate_metrics <- function(df_preds, df_test){
     tibble(
       thresholds = thresholds,
       sensitivity = map_dbl(thresholds, ~recall(match, (pred_prob >= .x) %>% as.integer())),
-      specificity = map_dbl(thresholds, ~ specificity(match, (pred_prob >= .x) %>% as.integer()))
+      specificity = map_dbl(thresholds, ~specificity(match, (pred_prob >= .x) %>% as.integer()))
     ) %>% 
     mutate(fpr = 1-specificity)
   
@@ -128,14 +129,14 @@ calculate_metrics <- function(df_preds, df_test){
   metrics$confusion_matrix <- ConfusionMatrix(match, match_pred)
   metrics$f_scores <- structure(FBeta_Score(match, match_pred, positive = 1, beta = 1:10), names = 1:10) 
   
-  rstudioapi::viewer("https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)") 
-  
   results$metrics <- metrics
   
   class(results) <- "rl_results"
   
   results
 }
+
+explain_metrics <- function() rstudioapi::viewer("https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)") 
 
 
 print.rl_results <- function(results){
@@ -153,3 +154,20 @@ print.rl_results <- function(results){
 }
 
 
+extract_model_component <- function(df_model_results, model_select, component){
+  if(is.character(model_select)){
+    component <- 
+      df_model_results %>% 
+      filter(model_name == model_select) %>% 
+      pull(component)
+  } else{
+    component <- 
+      df_model_results %>% 
+      slice(model_select) %>% 
+      pull(component)
+  }
+  
+  if(is.list(component)){
+    component[[1]]
+  }
+}
