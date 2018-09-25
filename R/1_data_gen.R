@@ -22,13 +22,13 @@ source("R/utils.R")
     df_b %>% 
     preprocess_data(year_a = F))
 
-(df_exact_oto_matches <- 
-  df_a_mod %>% 
-  select(id_a, fname, lname, birth_year, gender_code, race_code) %>% 
-  inner_join(df_b_mod %>% 
-               select(id_b, fname, lname, birth_year, gender_code, race_code)) %>% 
-  add_count(fname, lname, gender_code, race_code) %>% 
-  filter(n == 1) %>% 
+(df_exact_oto_matches <-
+  df_a_mod %>%
+  select(id_a, fname, lname, birth_year, gender_code, race_code) %>%
+  inner_join(df_b_mod %>%
+               select(id_b, fname, lname, birth_year, gender_code, race_code)) %>%
+  add_count(fname, lname, gender_code, race_code) %>%
+  filter(n == 1) %>%
   select(starts_with("id")))
 
 (df_exact_matches <- 
@@ -38,15 +38,18 @@ source("R/utils.R")
                  select(id_b, fname, lname, birth_year, gender_code, race_code)) %>% 
     select(starts_with("id")))
 
+
+
 (df_vrn_matches <- 
   df_a_mod %>% 
   select(id_a, voter_reg_num) %>% 
-  inner_join(df_b %>% 
+  inner_join(df_b_mod %>% 
                select(id_b, voter_reg_num), 
              by = "voter_reg_num") %>% 
   select(starts_with("id")) %>% 
-  mutate(match = "1"))
-  
+  mutate(match = "match") %>% 
+  distinct())
+
   
 df_matches_unexact <- 
   df_vrn_matches  %>% 

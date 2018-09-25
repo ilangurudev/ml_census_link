@@ -100,6 +100,14 @@ read_data("data/models/model_svmlinear.grid_yancey.train_features.all.rds")
 read_data("data/models/model_svmradial.grid_yancey.train_features.all.rds")
 
 
+(model_xgboost.grid_yancey.train_features.all <-
+    train(match ~ .,
+          df_train,
+          trControl = train_control,
+          method = "xgbTree"))
+
+# write_rds(model_xgboost.grid_yancey.train_features.all, "data/models/model_xgboost.grid_yancey.train_features.all.rds")
+read_data("data/models/model_xgboost.grid_yancey.train_features.all.rds")
 
 models <- list(model_rf.grid_yancey.train_features.all,
                model_rf.mtry2_yancey.train_features.imp,
@@ -131,6 +139,16 @@ write_rds(df_model_results, "data/results/df_model_results.rds")
 
 
 df_model_results %>% extract_model_component(2, "confusion_matrix")
+
+df_model_results %>% 
+  mutate(mistakes = map(pred_confidence, "most_confident_mistakes")) %>% 
+  select(model_name, mistakes) %>% 
+  unnest(mistakes) %>% 
+  add_count(pair_id) %>% 
+  mutate(n = n/2) %>% 
+  arrange(desc(n), pair_id, conf, model_name) %>% 
+  View
+
 
 df_model_metrics <- 
   df_model_results %>% 
