@@ -129,14 +129,15 @@ df_unmatches_unexact <-
   left_join(df_a_mod, by = "id_a") %>%
   left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
   mutate(pair_id = 986398  + row_number()) %>%  
-  mutate(match = "0")
+  mutate(match = "unmatch")
 
 df_matches_unexact %>% 
   write_csv("data/generated/df_unmatches_unexact.csv")
 
 df_pairs <- 
   df_unmatches_unexact %>%
-  bind_rows(df_matches_unexact) 
+  bind_rows(df_matches_unexact) %>% 
+  sample_n((nrow(.)))
 
 df_pairs %>% 
   write_csv("data/generated/df_pairs.csv")
@@ -148,9 +149,8 @@ set.seed(13)
 df_pairs_feature <- 
   df_pairs %>% 
   add_feature_vector() %>% 
-  select(match, contains("metric")) %>% 
+  select(starts_with("metric"), match) %>% 
   mutate(match = as.factor(match)) %>% 
-  sample_n((nrow(.))) %>% 
   as.data.frame()
 
 df_pairs_feature %>% 
