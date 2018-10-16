@@ -1,6 +1,6 @@
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, 
                rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
-               doParallel, pushoverr)
+               PGRdup, doParallel, pushoverr)
 
 source("data/credentials.R")
 
@@ -346,6 +346,7 @@ resolve_linkage <- function(df_aug){
 }
 
 
+
 add_count_name <- function(df, var, var_name){
   var_name <- quo_name(var_name)
   var <- enquo(var)
@@ -446,7 +447,7 @@ calculate_hamming_fields <- function(df){
   equality_vector <- 
     df %>% 
     mutate(fname_equal = fname_a == fname_b,
-           lname_equal = lname_a == lname_b,
+           # lname_equal = lname_a == lname_b,
            birth_year_equal = birth_year_a == birth_year_b,
            gender_code_equal = gender_code_a == gender_code_b,
            race_code_equal = race_code_a == race_code_b) %>% 

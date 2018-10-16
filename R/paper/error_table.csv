@@ -1,0 +1,8 @@
+error,amount,col_names,arguments
+swap_fields,20,"lname, fname",
+first_letter_abbreviate,0.05,fname,
+real_to_nicknames,0.05,fname,
+indel,0.1,lname,
+repl,0.1,fname,
+transpose,0.1,"lname, fname",
+married_name_change,0.1,,"lname = 'lname', sex = 'gender_code'"
