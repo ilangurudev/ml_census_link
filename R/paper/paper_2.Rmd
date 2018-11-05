@@ -1,0 +1,93 @@
+---
+title: "Paper"
+author: "Gurudev Ilangovan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    df_print: tibble
+    highlight: monochrome
+    theme: flatly
+    toc: yes
+    toc_depth: 5
+---
+
+```{r setup, results="hide"}
+knitr::opts_chunk$set(cache = T, message = FALSE)
+source("R/utils.R")
+```
+# Data Generation
+
+## Preprocessing
+
+1. Read April 2013 data and March 17 data. 
+2. Do some basic preprocessing
+  - Assign ids
+  - Calculate age from birth year
+  - Add scaled frequencies
+```{r preprocess}
+(df_a <- 
+    read_delim("data/apr13.txt", delim = "\t") %>% 
+    rename(name_suffix = name_sufx_cd) %>% 
+    mutate_if(is.character, str_squish) %>% 
+    mutate(id_a = row_number()))
+  
+(df_b <- 
+    read_delim("data/mar17.txt", delim = "\t") %>% 
+    rename(name_suffix = name_suffix_lbl) %>% 
+    mutate_if(is.character, str_squish) %>% 
+    mutate(id_b = row_number()))
+  
+(df_a_mod <- 
+  df_a %>% 
+  preprocess_data())
+
+(df_b_mod <- 
+    df_b %>% 
+    preprocess_data(year_a = F))
+
+```
+
+```{r}
+df_error_table <- 
+  read_csv("R/paper/error_table.csv")
+
+set.seed(13)
+df_messed_collection <- 
+  tibble(error_rate = seq(0, 40, 10)) %>% 
+    mutate(df_a_mod = map(error_rate, function(e){
+      # browser()
+      df_a_mod %>%
+        prep_data() %>%
+        mess_data(df_error_table %>% 
+                    mutate(amount = amount*e/10)) %>% 
+        pluck("df_secondary") %>% 
+        select(-file, -id) %>% 
+        mutate_if(is.character, str_to_upper) %>% 
+        mutate(birth_year = as.integer(birth_year)) %>% 
+        select(-ffreq, -lfreq) %>% 
+        add_count(fname) %>%
+        rename(ffreq = n) %>% 
+        add_count(lname) %>% 
+        rename(lfreq = n) %>% 
+        mutate(ffreq = scale(ffreq),
+               lfreq = scale(lfreq))
+    }))
+
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(df_pairs = map2(df_a_mod, error_rate, function(df_a_mod, e) {
+    message("________________________")
+    message(glue("Error rate: {e}%"))
+    
+    generate_pairs(df_a_mod = df_a_mod, 
+                   df_b_mod = df_b_mod, 
+                   data_pref = 
+                     e %>% 
+                     str_pad(width = 2, side = "left", pad = "0") %>% 
+                     str_c("err_", .))
+  }))
+ 
+```
+
+
+

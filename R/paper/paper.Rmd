@@ -4,16 +4,18 @@ author: "Gurudev Ilangovan"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: 
   html_document: 
+    df_print: tibble
     highlight: monochrome
-    theme: readable
+    theme: flatly
     toc: yes
     toc_depth: 5
 ---
 
 ```{r setup, results="hide"}
-knitr::opts_chunk$set(cache = T)
+knitr::opts_chunk$set(cache = T, message = FALSE)
 source("R/utils.R")
 ```
+
 
 # Data Generation
 
@@ -93,7 +95,7 @@ if(dir_exists(data_path)){
 
 ## Unmatch generation
 
-```{r unmatches}
+```{r unmatches, eval=FALSE}
 df_match_block <- 
   df_matches_unexact %>% 
   select(matches(or("id", "fname", "lname"))) %>% 
@@ -237,12 +239,11 @@ weight_vector <-
 
 df_all_combos_nested_sim <- 
   df_all_combos_nested %>% 
-  sample_n(5000) %>% 
   mutate(x = map_dbl(data, calculate_hamming_fields))
 
 df_unmatches_unexact <- 
   df_all_combos_nested_sim %>% 
-  semi_join(df_matches, by = "id_a") %>% 
+  semi_join(df_matches_unexact, by = "id_a") %>% 
   group_by(id_a) %>% 
   arrange(desc(x), .by_group = T) %>% 
   slice(1:5) %>% 
@@ -256,6 +257,12 @@ df_unmatches_unexact <-
 (df_unmatches_unexact %>% 
   write_rds(data_path_file("df_unmatches_unexact.rds")))
 ```
+
+```{r read_executed_unmatch, echo=FALSE}
+read_data("data/paper/df_unmatches_unexact.rds")
+df_unmatches_unexact
+```
+
 
 ## Pair Generation
 
@@ -274,24 +281,182 @@ df_pairs <-
 ```
 
 
+# Disturbing data
+
+```{r add_errors}
+df_pairs_a <- 
+  df_pairs %>% 
+  select(id_a) %>% 
+  distinct() %>% 
+  left_join(df_a_mod)
+
+df_pairs_b <- 
+  df_pairs %>% 
+  select(id_b) %>% 
+  distinct() %>% 
+  left_join(df_b_mod)
+
+df_error_table <- 
+  read_csv("R/paper/error_table.csv")
+
+set.seed(13)
+df_messed_collection <- 
+  tibble(error_rate = seq(0,4,1)) %>% 
+    mutate(messed_data = map(error_rate, function(e){
+      # browser()
+      df_pairs_a %>%
+        prep_data() %>%
+        mess_data(df_error_table %>% 
+                    mutate(amount = amount*e)) %>% 
+        pluck("df_secondary") %>% 
+        select(-file, -id) %>% 
+        mutate_if(is.character, str_to_upper) %>% 
+        mutate(birth_year = as.integer(birth_year))
+    }))
+
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(df_pairs = map(messed_data, function(df_a_messed){
+    # browser()
+    df_pairs %>% 
+      select(id_a, id_b, match) %>% 
+      left_join(df_a_messed, by = "id_a") %>% 
+      left_join(df_pairs_b, by = "id_b", suffix = c("_a", "_b"))
+  }))
+
+```
+
+
+
+# Feature Engineering
+
+Using a function called add_feature_vector to generate features. 
+
+```{r feature_generation}
+df_messed_collection <-
+  df_messed_collection %>% 
+  mutate(df_feature = map(df_pairs, function(df_pair){
+    df_pair %>%
+      add_feature_vector() %>%
+      select(starts_with("metric"), match) %>%
+      mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
+      as.data.frame()
+  }))
+  
+
+df_messed_collection %>%
+  write_rds("data/paper/df_messed_collection.rds")
+```
+
 # Modeling
 
-```{r}
+## Modeling setup
 
-```
+Basic modeling setup with 
 
+- train, test split
+- selecting a set of indices for cross validation of different models
+- selecting a few columns out of all to measure
+- other modeling choices like verbose training
+```{r training_setup}
+# registerDoParallel(cl)
 
-# Feature Generation
-```{r}
-# set.seed(13)
-# df_pairs_feature <- 
-#   df_pairs %>% 
-#   add_feature_vector() %>% 
-#   select(starts_with("metric"), match) %>% 
-#   mutate(match = as.factor(match)) %>% 
-#   as.data.frame()
+set.seed(1)
+train_indices <- 
+  sample(1:nrow(df_pairs), size = floor(nrow(df_pairs)*0.85))
+
+df_messed_collection <- 
+  df_messed_collection %>% 
+    mutate(
+      df_train = map(df_feature, function(df_pairs_feature){
+        df_pairs_feature[train_indices, ]
+      }),
+      df_test = map2(df_feature, df_pairs, function(df_pairs_feature, df_pair){
+        # browser()
+        df_pairs_feature %>% 
+          bind_cols(df_pair %>% select(-contains("freq"))) %>% 
+          .[-train_indices,]
+      })
+    )
+
+# df_train <- 
+#   df_pairs_feature[train_indices,]
 # 
-# df_pairs_feature %>% 
-#   write_csv("data/generated/df_pairs_feature.csv")
+# df_test <- 
+#   df_pairs_feature %>% 
+#   bind_cols(df_pairs) %>% 
+#   .[-train_indices,]
+
+set.seed(2)
+fold_indices <- createFolds(df_pairs[train_indices, ] %>% pull(match))
+
+train_control <- 
+  trainControl(index = fold_indices,
+               method = "cv", 
+               number = 10,
+               verboseIter = FALSE,
+               savePredictions = TRUE,
+               classProbs = TRUE)
 ```
+
+
+```{r model_training}
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(model_rf = map(df_train, function(df_tr){
+    # browser()
+    set.seed(3)
+    (model_rf.grid_yancey.train_features.all <-
+        train(match ~ .,
+              df_tr,
+              # trControl = trainControl(method = "cv", number = 10),
+              trControl = train_control,
+              tuneGrid = expand.grid(.mtry = seq(3, 30, 3)),
+              importance = TRUE,
+              keep.forest= TRUE,
+              ntree = 350,
+              method = "rf"))
+    
+    model_rf.grid_yancey.train_features.all
+  }))
+
+
+df_messed_collection %>% 
+  write_rds("data/paper/df_messed_collection_models.rds")
+```
+
+```{r test_set_evaluation}
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(
+    results = map2(model_rf, df_test, function(model, df){
+      # print("hey")
+      df %>% 
+      mutate(pair_id = 1:nrow(.)) %>% 
+      evaluate_model(model, df_test = .)
+    }),
+    metrics = map(results, ~.x$metrics$df_metric_table),
+    confusion_matrix = map(results, ~.x$metrics$confusion_matrix),
+    roc_curve = map(results, ~.x$metrics$roc_curve),
+    pred_confidence = map(results, ~.x$confidence)
+  )
+```
+
+```{r metric_review}
+df_model_metrics <- 
+  df_messed_collection %>% 
+  select(error_rate, metrics) %>% 
+  unnest(metrics) 
+
+
+
+df_model_metrics %>% 
+  filter(metric %in% c("accuracy", "precision", "recall", 
+                       "f1", "precision_k", "recall_k")) %>% 
+  arrange(metric, desc(value)) %>% 
+  print(n = Inf)
+
+```
+
+
 
