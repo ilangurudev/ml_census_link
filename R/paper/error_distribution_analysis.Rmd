@@ -1,0 +1,206 @@
+---
+title: "Analyzing the error distribution"
+author: "Gurudev Ilangovan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    df_print: tibble
+    highlight: monochrome
+    theme: flatly
+    toc: yes
+    toc_depth: 5
+  github_document:
+    df_print: tibble
+    highlight: monochrome
+    theme: flatly
+    toc: yes
+    toc_depth: 5
+---
+
+```{r setup, results="hide"}
+knitr::opts_chunk$set(cache = T, message = FALSE)
+source("R/utils.R")
+library(kableExtra)
+make_table <- function(tbl) {
+  # DT::datatable(tbl)
+  knitr::kable(tbl, "html") %>%
+        kable_styling(bootstrap_options =
+                        c("striped", "hover", "responsive"),
+                      full_width = FALSE,
+                      position = "left") %>% 
+    scroll_box(width = "1000px", height = "500px")
+    
+}
+```
+
+
+```{r}
+df_a <- 
+    read_delim("data/apr13.txt", delim = "\t") %>% 
+    rename(name_suffix = name_sufx_cd) %>% 
+    mutate_if(is.character, str_squish) %>% 
+    mutate(id_a = row_number())
+  
+df_b <- 
+    read_delim("data/mar17.txt", delim = "\t") %>% 
+    rename(name_suffix = name_suffix_lbl) %>% 
+    mutate_if(is.character, str_squish) %>% 
+    mutate(id_b = row_number())
+  
+(df_a_mod <- 
+  df_a %>% 
+  preprocess_data())
+
+(df_b_mod <- 
+    df_b %>% 
+    preprocess_data(year_a = F))
+```
+
+```{r}
+(df_vrn_matches <- 
+  df_a_mod %>% 
+   left_join(df_a %>% 
+               select(id_a, name_suffix) %>% 
+               mutate(name_suffix = ifelse(is.na(name_suffix), "", name_suffix))) %>% 
+  inner_join(df_b_mod  %>% 
+               left_join(df_b %>% 
+                           select(id_b, name_suffix) %>% 
+                           mutate(name_suffix = ifelse(is.na(name_suffix), "", name_suffix))),
+   by = "voter_reg_num", suffix = c("_a", "_b")) %>% 
+  mutate(
+    fname_hyphen = case_when(
+      str_detect(fname_a, "-") & str_detect(fname_b, "-") ~ "both",
+      str_detect(fname_a, "-")  ~ "a",
+      str_detect(fname_b, "-")  ~ "b",
+      TRUE ~ "none"),
+    lname_suffix =  case_when(
+      name_suffix_a != "" & name_suffix_b != "" ~ "both",
+      name_suffix_a != ""  ~ "a",
+      name_suffix_b != ""  ~ "b",
+      TRUE ~ "none")) %>%
+  rowwise() %>% 
+  mutate(gender = sort(c(gender_code_a, gender_code_b)) %>% str_c(collapse = ""),
+         race = sort(c(race_code_a, race_code_b)) %>% str_c(collapse = "")) %>% 
+  ungroup())
+```
+
+There are `r nrow(df_vrn_matches)` voter registration number matches between the two datasets. 
+
+
+```{r}
+(df_inexact_matches <- 
+  df_vrn_matches %>% 
+  mutate(diff_fname = fname_a != fname_b,
+         diff_lname = lname_a != lname_b,
+         diff_gender = gender_code_a != gender_code_b,
+         diff_race = race_code_a != race_code_b,
+         diff_dob = birth_year_a != birth_year_b) %>% 
+  filter(diff_fname | diff_lname | diff_gender | diff_race | diff_dob))
+```
+
+Out of `r nrow(df_vrn_matches)` matches, `r nrow(df_inexact_matches)` have differences in at least one of first name, last name, birth year, gender or race. 
+
+By race and gender this is the distribution
+```{r}
+(df_inexact_matches %>% 
+  count(race, gender, sort = T))
+```
+
+
+```{r}
+df_errors <- 
+  df_inexact_matches %>% 
+  mutate(
+         diff_name_swap = fname_a == lname_b & fname_b == lname_a,
+         err_dob_diff_2 = abs(birth_year_a - birth_year_b) > 1,
+         err_dob_diff_1 = abs(birth_year_a - birth_year_b) == 1,
+         err_fname_dist = stringdist(fname_a, fname_b),
+         fname_len_max = map2_int(str_length(fname_a), str_length(fname_b), max), 
+         fname_len_min = map2_int(str_length(fname_a), str_length(fname_b), min), 
+         fname_dist_max = err_fname_dist/fname_len_max,
+         fname_dist_min = err_fname_dist/fname_len_min,
+         err_fname_abbr = case_when(
+           !diff_name_swap & str_length(fname_a) == 1 & str_length(fname_b) > 2 ~ TRUE, 
+           !diff_name_swap & str_length(fname_b) == 1 & str_length(fname_a) > 2 ~ TRUE, 
+           TRUE ~ FALSE),
+         err_fname_nick = 
+           !diff_name_swap & 
+           err_fname_dist > 2 & 
+           !err_fname_abbr & 
+           fname_dist_max <= 0.666,
+         err_fname_diff = 
+           !diff_name_swap & 
+           err_fname_dist > 2 & 
+           !err_fname_abbr & 
+           fname_dist_max > 0.666,
+         err_fname_typo = !diff_name_swap & err_fname_dist %in% 1:2 & !err_fname_abbr,
+         err_hypenated_fname = !diff_name_swap & fname_hyphen %in% c("a", "b"),
+         err_lname_dist = stringdist(lname_a, lname_b),
+         lname_len_max = map2_int(str_length(lname_a), str_length(lname_b), max), 
+         lname_dist_max = err_lname_dist/lname_len_max,
+         err_marriage = !diff_name_swap & gender== "FF" & err_lname_dist > 2,
+         err_lname_suffix = !diff_name_swap & lname_suffix %in% c("a", "b"),
+         err_lname_typo = !diff_name_swap & err_lname_dist %in% 1:2 & !err_lname_suffix,
+         err_lname_diff = !err_lname_suffix & !diff_name_swap & err_lname_dist > 2 
+        )
+
+df_error_distribution <- 
+  df_errors %>% 
+  group_by(race, gender) %>% 
+  mutate(n = n()) %>% 
+  select(race, gender, n,
+         diff_dob, err_dob_diff_1, err_dob_diff_2, 
+         diff_name_swap,
+         diff_fname, err_fname_abbr, err_fname_typo, 
+           err_fname_nick, err_fname_diff, err_hypenated_fname,
+         diff_lname, err_marriage, err_lname_suffix,err_lname_typo, err_lname_diff) %>% 
+  summarise_all(function(x) mean(x)*100) %>% 
+  arrange(desc(n)) %>% 
+  select(race, gender, n, everything()) %>% 
+  mutate(n = n/100) %>% 
+  ungroup()
+
+df_error_distribution %>% 
+  make_table()
+
+df_error_distribution %>% 
+  summarise_if(is.numeric, function(x) weighted.mean(x, w = df_error_distribution$n)) %>% 
+  gather(error, perc) %>% 
+  filter(perc < 100)
+
+df_error_distribution %>% 
+  filter(err_marriage > 0) %>% 
+  summarise_if(is.numeric, function(x) weighted.mean(x, w = .$n)) %>% 
+  pull(err_marriage)
+
+df_error_distribution %>% 
+  filter(err_marriage > 0) %>% 
+  summarise_if(is.numeric, function(x) weighted.mean(x, w = .$n)) %>% 
+  pull(err_marriage)
+```
+
+```{r}
+tribble(
+  ~error, ~perc,
+  "dob", 3,
+  "fname_abbr", 0.5,
+  "fname_typo", 6, 
+  "nickname", 2.5,
+  "fname_diff", 2.5,
+  "lnames_typo", 0.8,
+  "females_marriage", 35,
+  "males_lname_suffix", 14
+) %>% 
+  mutate(perc = perc/sum(perc))
+  
+```
+
+
+
+```{r}
+df_inexact_matches %>% 
+  mutate(err_dob_diff = abs(birth_year_a - birth_year_b)) %>% 
+  ggplot(aes(err_dob_diff)) +
+  geom_bar()
+```
+

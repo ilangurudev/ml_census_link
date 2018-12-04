@@ -5,7 +5,7 @@ if(!"pacman" %in% installed.packages()){
 
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, 
                rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
-               PGRdup, doParallel, pushoverr, rlErrorGeneratoR)
+               PGRdup, doParallel, pushoverr, rlErrorGeneratoR, pROC)
 
 # source("data/credentials.R")
 
@@ -71,14 +71,14 @@ vectors_to_pairs <- function(df, View = F){
     df %>%
     select(-contains("_a"))
   
-   colnames(df_b) <- str_replace(colnames(df_b), "_b", "")
+  colnames(df_b) <- str_replace(colnames(df_b), "_b", "")
   
-    df <- 
-      bind_rows(df_a, df_b) %>%
-      arrange(pair_id) %>% 
-      select(pair_id, 
-             fname, lname, gender_code, race_code, birth_year, 
-             match, everything())
+  df <- 
+    bind_rows(df_a, df_b) %>%
+    arrange(pair_id) %>% 
+    select(pair_id, 
+           fname, lname, gender_code, race_code, birth_year, 
+           match, everything())
   
   if(View){
     View(df)
@@ -125,11 +125,11 @@ pairs_to_vectors <- function(df){
 
 # feature_extraction ------------------------------------------------------
 string_dist_norm <- function(x, y, ...){
-  stringdist(x, y, ...)/map2_int(str_length(x),str_length(y), max)
+  stringdist(x, y, ...)/map2_int(str_length(x),str_length(y), ~max(c(.x,.y)))
 }
 
 standardize_stringdist <- function(x, y, dist = "osa"){
-  stringdist(x, y, dist)/map2_int(str_length(x), str_length(y), max)
+  stringdist(x, y, dist)/map2_int(str_length(x), str_length(y), ~max(c(.x,.y)))
 }
 
 extract_initals <- function(x){
@@ -137,7 +137,8 @@ extract_initals <- function(x){
 }
 
 summarise_all_string_metrics <- function(x, y, col_name){
-  methods <- c("osa", "lv", "dl", "lcs", "qgram", "jaccard", "jw", "soundex")
+  # "osa", "lv", "lcs", "qgram", "jaccard"
+  methods <- c("dl", "jw", "soundex")
   
   dists <- map_dbl(methods, ~stringdist(x, y, method = .x))
   tibble(metric = str_c("metric_", col_name, "_", methods), dists = dists) %>% 
@@ -147,85 +148,66 @@ summarise_all_string_metrics <- function(x, y, col_name){
 add_feature_vector <- function(df){
   # browser()
   df %>%
-    # filter(fname_a != "",
-    #        fname_b != "",
-    #        lname_a != "",
-    #        lname_b != "") %>% 
-    rename(metric_ffreq_a = ffreq_a,
-           metric_ffreq_b = ffreq_b,
-           metric_lfreq_a = lfreq_a,
-           metric_lfreq_b = lfreq_b) %>% 
     mutate(pair_id = row_number(),
            birth_year_a = as.double(birth_year_a),
            birth_year_b = as.double(birth_year_b),
-           metric_ffreq_a = as.double(metric_ffreq_a),
-           metric_ffreq_b = as.double(metric_ffreq_b),
-           metric_lfreq_a = as.double(metric_lfreq_a),
-           metric_lfreq_b = as.double(metric_lfreq_b),
+           # metric_ffreq_a = as.double(ffreq_a),
+           # metric_ffreq_b = as.double(ffreq_b),
+           # metric_lfreq_a = as.double(lfreq_a),
+           # metric_lfreq_b = as.double(lfreq_b),
            fname_metrics = map2(fname_a, fname_b, 
                                 summarise_all_string_metrics, "fname"),
-           # fname_longest_metrics = map2(fname_longest_a, fname_longest_b, 
-           #                              summarise_all_string_metrics, "fname_longest"),
            lname_metrics = map2(lname_a, lname_b, 
                                 summarise_all_string_metrics, "lname"),
+           # fname_longest_metrics = map2(fname_longest_a, fname_longest_b, 
+           #                              summarise_all_string_metrics, "fname_longest"),
            # lname_longest_metrics = map2(lname_longest_a, lname_longest_b, 
            #                              summarise_all_string_metrics, "lname_longest"),
-           metric_gender_code = map2_chr(gender_code_a, gender_code_b, function(x, y){
+           # metric_gender_code_ff = metric_gender_code == "FF",
+           # metric_race_code_bb = metric_race_code == "BB",
+           gender_code = map2_chr(gender_code_a, gender_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
+           metric_gender_code_ff = gender_code  %>% str_count("F"),
+           metric_gender_code_mm = gender_code  %>% str_count("M"),
            metric_gender_code_same = gender_code_a == gender_code_b,
-           metric_gender_code_ff = metric_gender_code == "FF",
-           metric_race_code = map2_chr(race_code_a, race_code_b, function(x, y){
+           race_code = map2_chr(race_code_a, race_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
            metric_race_code_same = race_code_a == race_code_b,
-           metric_race_code_ww = metric_race_code == "WW",
-           metric_race_code_bb = metric_race_code == "BB",
-           metric_year_diff = as.integer(birth_year_a) - as.integer(birth_year_b),
-           metric_year_diff_abs = abs(metric_year_diff),
+           metric_race_code_ww_bb = race_code == "WW" | race_code == "BB" ,
+           year_diff = as.integer(birth_year_a) - as.integer(birth_year_b),
+           metric_year_diff_abs = abs(year_diff),
            metric_age = 2017 - birth_year_b,
-           metric_year_align = 
-             stringdist(birth_year_a, birth_year_b, "dl")/3,
-           fname_letters_a = 
-             fname_a %>% 
-             str_split(" ") %>% 
-             map_chr(~str_c(str_sub(.x,1,1), collapse = "")),
-           fname_letters_b = 
-             fname_b %>% 
-             str_split(" ") %>% 
-             map_chr(~str_c(str_sub(.x,1,1), collapse = "")),
-           metric_fname_letters_align = 
-             stringdist(fname_letters_a, fname_letters_b, "osa")/
-             map2_int(str_length(fname_letters_b), str_length(fname_letters_a), max),
-           metric_ffreq_min = map2_dbl(metric_ffreq_a, metric_ffreq_b, min),
-           metric_ffreq_max = map2_dbl(metric_ffreq_a, metric_ffreq_b, max),
-           metric_ffreq_mean = map2_dbl(metric_ffreq_a, metric_ffreq_b, mean),
-           metric_ffreq_diff = map2_dbl(metric_ffreq_a, metric_ffreq_b, ~(.x-.y)),
-           metric_lfreq_min = map2_dbl(metric_lfreq_a, metric_lfreq_b, min),
-           metric_lfreq_max = map2_dbl(metric_lfreq_a, metric_lfreq_b, max),
-           metric_lfreq_mean = map2_dbl(metric_lfreq_a, metric_lfreq_b, mean),
-           metric_lfreq_diff = map2_dbl(metric_lfreq_a, metric_lfreq_b, ~(.x-.y))
+           metric_ffreq_mean = map2_dbl(ffreq_a, ffreq_b, ~mean(c(.x,.y))),
+           metric_lfreq_mean = map2_dbl(lfreq_a, lfreq_b, ~mean(c(.x,.y))),
+           # metric_year_align = 
+           #   stringdist(birth_year_a, birth_year_b, "dl")/3,
+           # fname_letters_a = 
+           #   fname_a %>% 
+           #   str_split(" ") %>% 
+           #   map_chr(~str_c(str_sub(.x,1,1), collapse = "")),
+           # fname_letters_b = 
+           #   fname_b %>% 
+           #   str_split(" ") %>% 
+           #   map_chr(~str_c(str_sub(.x,1,1), collapse = "")),
+           # metric_fname_letters_align = 
+           #   stringdist(fname_letters_a, fname_letters_b, "osa")/
+           #   map2_int(str_length(fname_letters_b), str_length(fname_letters_a), ~max(c(.x,.y))),
+           # metric_ffreq_min = map2_dbl(metric_ffreq_a, metric_ffreq_b, ~min(c(.x,.y))),
+           # metric_ffreq_max = map2_dbl(metric_ffreq_a, metric_ffreq_b, ~max(c(.x,.y))),
+           # metric_ffreq_diff = map2_dbl(metric_ffreq_a, metric_ffreq_b, ~(.x-.y)),
+           # metric_lfreq_min = map2_dbl(metric_lfreq_a, metric_lfreq_b, ~min(c(.x,.y))),
+           # metric_lfreq_max = map2_dbl(metric_lfreq_a, metric_lfreq_b, ~max(c(.x,.y))),
+           # metric_lfreq_diff = map2_dbl(metric_lfreq_a, metric_lfreq_b, ~(.x-.y))
     ) %>%
     unnest() %>%
-    mutate(metric_distance_from_identical = 
-             (map2_dbl(metric_year_diff_abs/3, metric_year_diff_abs/3, max))^2 +
-             (!metric_race_code_same)^2 + 
-             (!metric_gender_code_same)^2 + 
-             (metric_fname_osa/
-                map2_int(str_length(fname_a), 
-                         str_length(fname_b), max))^2 +
-             # (metric_fname_longest_osa/
-             #    map2_int(str_length(fname_longest_a), 
-             #             str_length(fname_longest_b), max))^2 +
-             metric_fname_letters_align^2 +
-             (metric_lname_osa/
-                map2_int(str_length(lname_a), 
-                         str_length(lname_b), max))^2
-    ) %>% 
     select(pair_id, fname_a, fname_b,
            lname_a, lname_b,
            starts_with("birth"), starts_with("gender_code"), starts_with("race_code"),
-           everything())
+           everything()) %>%
+    mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
+    as.data.frame()
 }
 
 
@@ -250,7 +232,7 @@ multipass_blocking <- function(df1, df2){
     distinct() %>% 
     select(-starts_with("blocking")) %>% 
     filter(!is.na(fname_b) & !is.na(lname_b) & !is.na(fname_a) & !is.na(lname_a) &
-            fname_b != "" & lname_b != "" & fname_a != "" & lname_a != "")
+             fname_b != "" & lname_b != "" & fname_a != "" & lname_a != "")
 }
 
 
@@ -308,7 +290,7 @@ predict_links_raw <- function(model, df_pair_vector){
   names(df_preds) <- c("unmatch_prob", "match_prob")
   
   # df_preds_aug <- 
-    df_preds %>% 
+  df_preds %>% 
     mutate(pair_id = df_pair_vector$pair_id,
            conf = abs(match_prob - 0.5)*2,
            match_pred = as.integer(match_prob >= 0.5)) %>% 
@@ -329,12 +311,12 @@ links_1to1 <- function(df_preds_aug){
   
   # df_preds_aug <- 
   df_preds_aug %>% 
-  left_join(df_pred_1to1) %>% 
-  mutate(match_pred_one_to_one = ifelse(!is.na(one_one), 1, 0)) %>% 
-  view_as_pairs() %>% 
-  arrange(conf, pair_id) %>% 
-  select(pair_id, fname, lname, gender_code, race_code, birth_year, 
-         match_prob, conf, match_pred, everything())
+    left_join(df_pred_1to1) %>% 
+    mutate(match_pred_one_to_one = ifelse(!is.na(one_one), 1, 0)) %>% 
+    view_as_pairs() %>% 
+    arrange(conf, pair_id) %>% 
+    select(pair_id, fname, lname, gender_code, race_code, birth_year, 
+           match_prob, conf, match_pred, everything())
   
 }
 
@@ -378,7 +360,7 @@ find_best_links_aggregated <- function(df_match){
   # df_prob_1 <- 
   #   df_match_counts %>% 
   #   filter(match_prob == 1) %>% 
-    
+  
   
   df_match_counts %>% 
     filter(n_a > 1 | n_b > 1) %>%
@@ -396,7 +378,7 @@ find_best_links_aggregated <- function(df_match){
 
 find_best_links <- function(df_match, id){
   id = enquo(id)
-
+  
   df_match %>% 
     filter(n_a > 1 | n_b > 1) %>% 
     group_by(!!id) %>% 
@@ -433,7 +415,7 @@ link_datasets <- function(df_a, df_b, model){
     predict_links_raw(model, df_pair_vector)
   
   # predict_links_1to1 <- 
-    pf_preds_aug %>% 
+  pf_preds_aug %>% 
     resolve_linkage()
   
 }
@@ -622,13 +604,13 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
   
   hamming_rows <- nrow(df_all_combos_nested)
   
-  # message(glue("Number of rows = "))
+  message(glue("Number of rows = {hamming_rows}"))
   df_all_combos_nested_sim <- 
     df_all_combos_nested %>% 
     mutate(
       rn = row_number(),
       x = map2_dbl(data, rn, function(data, rn){
-        if(rn%%1000 == 0) message(glue("{data_pref}: {round(rn/hamming_rows,3)}%"))
+        if(rn%%1000 == 0) message(glue("{data_pref}: {round(rn*100/hamming_rows,3)}%"))
         calculate_hamming_fields(data, weight_vector) 
       }))
   
@@ -721,7 +703,8 @@ calculate_metrics <- function(df_preds, df_test,
                               metric = precision,
                               k_range = seq(0.5, 1, .001),
                               value = 0.99,
-                              lowest = T){
+                              lowest = T,
+                              plot_roc = T){
   df_preds_aug <- 
     df_preds %>% 
     mutate(pair_id = df_test$pair_id,
@@ -804,6 +787,7 @@ calculate_metrics <- function(df_preds, df_test,
   metrics$f1_k <- f1Score(match, match_pred_k)
   
   metrics$accuracy <- Accuracy(match, match_pred)
+  metrics$auc <- auc(roc(match, match_pred))
   metrics$precision <- precision(match, match_pred)
   metrics$sensitivity <- recall(match, match_pred)
   metrics$specificity <- specificity(match, match_pred)
@@ -843,7 +827,7 @@ calculate_metrics <- function(df_preds, df_test,
          x = "False Positive Rate (1-Specificity)", 
          y = "True Positive Rate (Sensitivity)")
   
-  plot(metrics$roc_curve)
+  if(plot_roc) plot(metrics$roc_curve)
   
   metrics$confusion_matrix <- ConfusionMatrix(match, match_pred)
   metrics$f_scores <- structure(FBeta_Score(match, match_pred, positive = 1, beta = 1:10), names = 1:10) 
@@ -899,38 +883,70 @@ calc_threshold_for_metric_value <-
            value = 0.99, 
            k_range = seq(0.5, 1, 0.001), 
            lowest = TRUE){
-  # browser()
+    # browser()
     
-  y_true <- y_true == "match"  
-  
-  df_values_thresholds <- 
-    tibble(k_range = k_range,
-           values =
-            map_dbl(k_range, function(x){
-              metric(y_true, y_prob >= x)
-            })) 
-  
-  if(lowest){
-    df_filtered <- 
-      df_values_thresholds %>% 
-      filter(values >= value) %>% 
-      arrange(k_range) %>% 
-      slice(1) 
+    y_true <- y_true == "match"  
     
+    df_values_thresholds <- 
+      tibble(k_range = k_range,
+             values =
+               map_dbl(k_range, function(x){
+                 metric(y_true, y_prob >= x)
+               })) 
     
+    if(lowest){
+      df_filtered <- 
+        df_values_thresholds %>% 
+        filter(values >= value) %>% 
+        arrange(k_range) %>% 
+        slice(1) 
+      
+      
+      
+    } else {
+      df_filtered <- 
+        df_values_thresholds %>% 
+        filter(values <= value) %>% 
+        arrange(desc(k_range)) %>% 
+        slice(1) 
+    }
     
-  } else {
-    df_filtered <- 
-      df_values_thresholds %>% 
-      filter(values <= value) %>% 
-      arrange(desc(k_range)) %>% 
-      slice(1) 
+    message(glue("Metric has achieved {df_filtered$values} \\
+                 at threshold {df_filtered$k_range}"))
+    
+    df_filtered$k_range
   }
+
+
+plot_roc_all <- function(df_evaluated, model_col = model, results_col = results){
+  model_col <- enquo(model_col)
+  results_col <- enquo(results_col)
+  p <- df_evaluated %>% 
+    mutate(df_roc = !!results_col %>% map("metrics") %>% map("df_roc")) %>% 
+    select(!!model_col, df_roc) %>% 
+    unnest() %>% 
+    ggplot(aes(fpr, 
+               sensitivity, 
+               color = !!model_col, 
+               group = !!model_col,
+               text = glue("threshold: {thresholds}
+                            fpr: {round(fpr, 3)}
+                            sensitivity: {round(sensitivity, 3)} 
+                            specificity: {round(specificity, 3)}")))+
+    geom_line(size = 1, alpha = 0.7) +
+    geom_point(size = 0.5, 
+               alpha = 0.5) +
+    scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+    labs(title= "ROC curve", 
+         x = "False Positive Rate (1-Specificity)", 
+         y = "True Positive Rate (Sensitivity)") +
+    theme_light() +
+    scale_color_continuous(low = "gray13", high = "red")
   
-  message(glue("Metric has achieved {df_filtered$values} \\
-                  at threshold {df_filtered$k_range}"))
-  
-  df_filtered$k_range
+  plotly::ggplotly(p, tooltip="text")
 }
+
+
 
 
