@@ -27,45 +27,45 @@ extract_major_token <- function(x){
     })
 }
 
-preprocess_data <- function(df, year_a = T){
-  
-  df  %>% 
-    select(starts_with("id"), 
-           fname = first_name, lname = last_name, 
-           birth_age, gender_code, race_code, 
-           voter_reg_num, name_suffix) %>% 
-    mutate(birth_age = birth_age %>% as.integer(),
-           name_suffix = if_else(is.na(name_suffix), "", name_suffix),
-           lname = glue("{lname} {name_suffix}") %>% str_trim(),
-           # fname_longest = extract_major_token(fname),
-           # lname_longest = extract_major_token(lname),
-           year_a = year_a,
-           birth_year = ifelse(year_a, 2013 - birth_age, 2017 - birth_age)) %>% 
-    select(-name_suffix, -year_a) %>% 
-    add_count(fname) %>%
-    rename(ffreq = n) %>% 
-    add_count(lname) %>% 
-    rename(lfreq = n) %>% 
-    mutate(ffreq = scale(ffreq),
-           lfreq = scale(lfreq))
-}
+# preprocess_data <- function(df, year_a = T){
+#   
+#   df  %>% 
+#     select(starts_with("id"), 
+#            fname = first_name, lname = last_name, 
+#            birth_age, gender_code, race_code, 
+#            voter_reg_num, name_suffix) %>% 
+#     mutate(birth_age = birth_age %>% as.integer(),
+#            name_suffix = if_else(is.na(name_suffix), "", name_suffix),
+#            lname = glue("{lname} {name_suffix}") %>% str_trim(),
+#            # fname_longest = extract_major_token(fname),
+#            # lname_longest = extract_major_token(lname),
+#            year_a = year_a,
+#            birth_year = ifelse(year_a, 2013 - birth_age, 2017 - birth_age)) %>% 
+#     select(-name_suffix, -year_a) %>% 
+#     add_count(fname) %>%
+#     rename(ffreq = n) %>% 
+#     add_count(lname) %>% 
+#     rename(lfreq = n) %>% 
+#     mutate(ffreq = scale(ffreq),
+#            lfreq = scale(lfreq))
+# }
 
-preprocess_data_2 <- function(df,df_dob){
+preprocess_data <- function(df,df_dob){
   
   df  %>% 
     select(starts_with("id"), 
-           fname = first_name, lname = last_name, mname,
+           fname = first_name, mname, lname = last_name, 
            birth_age, gender_code, race_code, 
-           voter_reg_num, name_suffix, ncid) %>% 
+           voter_reg_num, name_suffix) %>% #, ncid
     left_join(df_dob) %>% 
     mutate(birth_age = birth_age %>% as.integer(),
            name_suffix = if_else(is.na(name_suffix), "", name_suffix),
            mname = if_else(is.na(mname), "", mname),
            lname = glue("{lname} {name_suffix}") %>% str_trim(),
-           fmname =  glue("{fname} {mname}") %>% str_trim(),
+           # fmname =  glue("{fname} {mname}") %>% str_trim(),
            birth_year = year(dob)
            ) %>% 
-    select(-name_suffix, -mname) %>% 
+    select(-name_suffix) %>% 
     add_count(fname) %>%
     rename(ffreq = n) %>%
     add_count(lname) %>%
@@ -101,7 +101,7 @@ vectors_to_pairs <- function(df, View = F){
     bind_rows(df_a, df_b) %>%
     arrange(pair_id) %>% 
     select(pair_id, 
-           fname, lname, gender_code, race_code, birth_year, 
+           fname, mname, lname, gender_code, race_code, birth_year, 
            match, everything())
   
   if(View){
@@ -175,26 +175,18 @@ add_feature_vector <- function(df){
     mutate(pair_id = row_number(),
            birth_year_a = as.double(birth_year_a),
            birth_year_b = as.double(birth_year_b),
-           # metric_ffreq_a = as.double(ffreq_a),
-           # metric_ffreq_b = as.double(ffreq_b),
-           # metric_lfreq_a = as.double(lfreq_a),
-           # metric_lfreq_b = as.double(lfreq_b),
            fname_metrics = map2(fname_a, fname_b, 
                                 summarise_all_string_metrics, "fname"),
+           mname_metrics = map2(mname_a, mname_b, 
+                                summarise_all_string_metrics, "mname"),
            lname_metrics = map2(lname_a, lname_b, 
                                 summarise_all_string_metrics, "lname"),
-           # fname_longest_metrics = map2(fname_longest_a, fname_longest_b, 
-           #                              summarise_all_string_metrics, "fname_longest"),
-           # lname_longest_metrics = map2(lname_longest_a, lname_longest_b, 
-           #                              summarise_all_string_metrics, "lname_longest"),
-           # metric_gender_code_ff = metric_gender_code == "FF",
-           # metric_race_code_bb = metric_race_code == "BB",
            gender_code = map2_chr(gender_code_a, gender_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
            metric_gender_code_ff = gender_code  %>% str_count("F"),
            metric_gender_code_mm = gender_code  %>% str_count("M"),
-           metric_gender_code_same = gender_code_a == gender_code_b,
+           # metric_gender_code_same = gender_code_a == gender_code_b,
            race_code = map2_chr(race_code_a, race_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
@@ -202,7 +194,9 @@ add_feature_vector <- function(df){
            metric_race_code_ww_bb = race_code == "WW" | race_code == "BB" ,
            year_diff = as.integer(birth_year_a) - as.integer(birth_year_b),
            metric_year_diff_abs = abs(year_diff),
-           metric_age = 2017 - birth_year_b,
+           metric_age_b = 2017 - birth_year_b,
+           metric_age_a = 2013 - birth_year_a,
+           metric_dob_dist = stringdist(dob_a, dob_b),
            metric_ffreq_mean = map2_dbl(ffreq_a, ffreq_b, ~mean(c(.x,.y))),
            metric_lfreq_mean = map2_dbl(lfreq_a, lfreq_b, ~mean(c(.x,.y))),
            # metric_year_align = 
@@ -226,9 +220,13 @@ add_feature_vector <- function(df){
            # metric_lfreq_diff = map2_dbl(metric_lfreq_a, metric_lfreq_b, ~(.x-.y))
     ) %>%
     unnest() %>%
-    select(pair_id, fname_a, fname_b,
+    select(pair_id, 
+           fname_a, fname_b,
+           mname_a, mname_b,
            lname_a, lname_b,
-           starts_with("birth"), starts_with("gender_code"), starts_with("race_code"),
+           starts_with("birth"), 
+           starts_with("gender_code"), 
+           starts_with("race_code"),
            everything()) %>%
     mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
     as.data.frame()
@@ -447,7 +445,7 @@ link_datasets <- function(df_a, df_b, model){
 
 
 generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
-  data_path <- "data/paper/error_data/"
+  data_path <- "data/paper2/"
   data_path_file <- function(file_name) glue("{data_path}{data_pref}_{file_name}.rds")
   write_rds_mod <-  function(file, file_name) write_rds(file, data_path_file(file_name))
   
@@ -455,9 +453,11 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
   message("Exact matches")
   (df_exact_matches <- 
       df_a_mod %>% 
-      select(id_a, fname, lname, birth_year, gender_code, race_code) %>% 
+      select(id_a, fname, mname, lname, 
+             dob, gender_code, race_code) %>% 
       inner_join(df_b_mod %>% 
-                   select(id_b, fname, lname, birth_year, gender_code, race_code)) %>% 
+                   select(id_b, fname, mname, lname, 
+                          dob, gender_code, race_code)) %>% 
       select(starts_with("id")))
   
   df_exact_matches %>% 
@@ -479,12 +479,12 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
     write_rds_mod("df_vrn_matches")
   
   message("Unexact Matches (what will finally be used)")
-  df_matches_unexact <- 
-    df_vrn_matches  %>% 
-    anti_join(df_exact_matches) %>% 
-    left_join(df_a_mod, by = "id_a") %>% 
-    left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
-    mutate(pair_id = row_number())
+  (df_matches_unexact <- 
+      df_vrn_matches  %>% 
+      anti_join(df_exact_matches) %>% 
+      left_join(df_a_mod, by = "id_a") %>% 
+      left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
+      mutate(pair_id = row_number()))
   
   df_matches_unexact %>% 
     write_rds_mod("df_matches_unexact")
@@ -492,7 +492,7 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
   message("Generating close non matches")
   df_match_block <- 
     df_matches_unexact %>% 
-    select(matches(or("id", "fname", "lname"))) %>% 
+    select(matches(or("id", "fname", "lname", "dob"))) %>% 
     mutate(fname_soundex_a = soundex(fname_a),
            fname_soundex_b = soundex(fname_b),
            fname_dm_a = map(fname_a, DoubleMetaphone),
@@ -508,8 +508,9 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
            lname_dm2_a = map_chr(lname_dm_a, 2),
            lname_dm_b = map(lname_b, DoubleMetaphone),
            lname_dm1_b = map_chr(lname_dm_b, 1),
-           lname_dm2_b = map_chr(lname_dm_b, 2)) %>% 
-    select(-fname_dm_a, -fname_dm_b, -lname_dm_a, -lname_dm_b)
+           lname_dm2_b = map_chr(lname_dm_b, 2)
+    ) %>% 
+    select(-fname_dm_a, -fname_dm_b) #, -lname_dm_a, -lname_dm_b)
   
   df_a_block <- 
     df_a_mod %>% 
@@ -564,16 +565,16 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
         inner_join(df_b_block, by = c("fname_dm2_a" = "fname_dm2_b")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("lname_soundex_a" = "lname_soundex_b")) %>% 
+      df_match_block_a %>%
+        inner_join(df_b_block, by = c("lname_soundex_a" = "lname_soundex_b")) %>%
         select(id_a, id_b),
       
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("lname_dm1_a" = "lname_dm1_b")) %>% 
+      df_match_block_a %>%
+        inner_join(df_b_block, by = c("lname_dm1_a" = "lname_dm1_b")) %>%
         select(id_a, id_b),
       
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("lname_dm2_a" = "lname_dm2_b")) %>% 
+      df_match_block_a %>%
+        inner_join(df_b_block, by = c("lname_dm2_a" = "lname_dm2_b")) %>%
         select(id_a, id_b),
       
       df_match_block_b %>% 
@@ -588,20 +589,33 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
         inner_join(df_a_block, by = c("fname_dm2_b" = "fname_dm2_a")) %>% 
         select(id_a, id_b),
       
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("lname_soundex_b" = "lname_soundex_a")) %>% 
+      df_match_block_b %>%
+        inner_join(df_a_block, by = c("lname_soundex_b" = "lname_soundex_a")) %>%
         select(id_a, id_b),
       
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("lname_dm1_b" = "lname_dm1_a")) %>% 
+      df_match_block_b %>%
+        inner_join(df_a_block, by = c("lname_dm1_b" = "lname_dm1_a")) %>%
         select(id_a, id_b),
       
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("lname_dm2_b" = "lname_dm2_a")) %>% 
+      df_match_block_b %>%
+        inner_join(df_a_block, by = c("lname_dm2_b" = "lname_dm2_a")) %>%
         select(id_a, id_b)
     ) %>% 
-    distinct()
+    distinct() %>% 
+    anti_join(df_vrn_matches) %>% 
+    anti_join(df_exact_matches)
   
+  # added
+  df_all_combos <- 
+    df_all_combos %>% 
+    left_join(df_a_mod %>% select(id_a, dob), 
+              by = "id_a") %>% 
+    left_join(df_b_mod %>% select(id_b, dob), 
+              by = "id_b", 
+              suffix = c("_a", "_b")) %>%
+    filter(abs(year(dob_a) - year(dob_b)) <=2|
+             stringdist(year(dob_a),year(dob_b)) <= 1) %>% 
+    select(-dob_a, -dob_b)
   
   df_all_combos_nested <- 
     df_all_combos %>% 
@@ -610,50 +624,71 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
     group_by(id_a, id_b) %>% 
     nest()
   
-  weight_vector <- 
+  df_exact_matches %>% 
+    write_rds_mod("df_all_combos_nested")
+  
+  df_weight_vector <- 
     df_a_mod %>% 
     bind_rows(df_b_mod) %>% 
-    select(fname, gender_code, race_code, birth_year) %>% 
+    select(fname, mname, lname, gender_code, race_code, dob) %>% 
+    mutate(year = year(dob),
+           md = glue("{month(dob)}-{day(dob)}")) %>% 
+    # select(-dob) %>% 
     summarise_all(n_unique) %>% 
-    rename_all(rename_weight) %>% 
-    mutate(sum = 
-             fname_weight + 
-             # lname_weight + 
-             gender_code_weight +
-             race_code_weight +
-             birth_year_weight) %>% 
-    mutate_all(function(x, all) x/all, all = .$sum) %>% 
-    select(-sum) %>% 
-    df_to_vector()
+    rename_all(rename_weight) %>%
+    gather(col, val) %>% 
+    mutate(val = val/sum(val),
+           val = map2_dbl(col, val, function(x,y){
+             names(y) <- x
+             y
+           })) %>% 
+    arrange(col)
   
-  hamming_rows <- nrow(df_all_combos_nested)
+  weight_vector <- df_weight_vector$val
+  names(weight_vector) <- df_weight_vector$col
   
-  message(glue("Number of rows = {hamming_rows}"))
+  number_of_sims <- nrow(df_all_combos_nested)
+  message(glue("Number of rows: {number_of_sims}"))
+  time_start <- Sys.time()
   df_all_combos_nested_sim <- 
     df_all_combos_nested %>% 
-    mutate(
-      rn = row_number(),
-      x = map2_dbl(data, rn, function(data, rn){
-        if(rn%%1000 == 0) message(glue("{data_pref}: {round(rn*100/hamming_rows,3)}%"))
-        calculate_hamming_fields(data, weight_vector) 
-      }))
+    mutate(x = map2_dbl(row_number(), data, function(i, df){
+      if(i%%1000 == 0){
+        message(
+          glue("{i}/{number_of_sims} records: {round(i*100/number_of_sims, 2)}%- {round(as.numeric(Sys.time()-time_start,units='mins'), 1)} minutes elapsed"))
+        # message(Sys.time() - time_start)
+      }
+      calculate_hamming_fields(df, weight_vector)
+    }),
+    match = "unmatch")
   
-  df_all_combos_nested_sim %>% 
+  df_exact_matches %>% 
     write_rds_mod("df_all_combos_nested_sim")
   
   
-  df_unmatches_unexact <- 
-    df_all_combos_nested_sim %>% 
-    semi_join(df_matches_unexact, by = "id_a") %>% 
-    group_by(id_a) %>% 
-    arrange(desc(x), .by_group = T) %>% 
-    slice(1:5) %>% 
-    ungroup() %>% 
-    select(starts_with("id")) %>% 
-    left_join(df_a_mod, by = "id_a") %>%
-    left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
-    mutate(pair_id = 986398  + row_number()) %>%  
-    mutate(match = "unmatch")
+  k <- 1
+  (df_unmatches_unexact <- 
+      df_all_combos_nested_sim %>% 
+      # semi_join(df_matches_unexact, by = "id_a") %>%
+      group_by(id_a) %>% 
+      arrange(desc(x), .by_group = T) %>% 
+      slice(1:k) %>% 
+      ungroup() %>% 
+      bind_rows(
+        df_all_combos_nested_sim %>% 
+          # semi_join(df_matches_unexact, by = "id_b") %>%
+          group_by(id_b) %>% 
+          arrange(desc(x), .by_group = T) %>% 
+          slice(1:k) %>% 
+          ungroup() 
+      ) %>%
+      arrange(desc(x)) %>% 
+      select(starts_with("id"), match) %>% 
+      distinct() %>% 
+      slice(1:(4*nrow(df_matches_unexact))) %>% 
+      left_join(df_a_mod, by = "id_a") %>%
+      left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
+      mutate(pair_id = 986398  + row_number())) 
   
   df_unmatches_unexact %>% 
     write_rds_mod("df_unmatches_unexact")
@@ -686,17 +721,28 @@ summarise_results <- function(){
 n_unique <- function(x) x %>% unique() %>% length()
 rename_weight <- function(x) str_c(x, "_weight")
 df_to_vector <- function(df) df %>% .[1, ] %>% unclass() %>% as.double()
+
 calculate_hamming_fields <- function(df, weight_vector){
-  equality_vector <- 
+  
+  df_equality <- 
     df %>% 
     mutate(fname_equal = fname_a == fname_b,
-           # lname_equal = lname_a == lname_b,
-           birth_year_equal = birth_year_a == birth_year_b,
+           mname_equal = mname_a == mname_b,
+           lname_equal = lname_a == lname_b,
            gender_code_equal = gender_code_a == gender_code_b,
-           race_code_equal = race_code_a == race_code_b) %>% 
+           race_code_equal = race_code_a == race_code_b,
+           dob_equal = dob_a == dob_b,
+           year_equal = year(dob_a) == year(dob_b),
+           md_equal = 
+             glue("{month(dob_a)}-{day(dob_a)}") == 
+             glue("{month(dob_b)}-{day(dob_b)}")
+           ) %>% 
     select(contains("equal")) %>% 
-    df_to_vector()
-  sum(equality_vector * weight_vector)
+    gather(col, equal) %>% 
+    arrange(col) %>% 
+    mutate(equal = equal %>% as.integer())
+    
+  sum(df_equality$equal * weight_vector)
 }
 
 

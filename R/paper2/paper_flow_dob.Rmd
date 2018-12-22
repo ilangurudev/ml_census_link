@@ -18,7 +18,7 @@ output:
 
 ```{r setup, results="hide"}
 knitr::opts_chunk$set(cache = F, message = FALSE)
-source("R/utils.R")
+source("R/paper2/utils.R")
 theme_set(theme_light())
 ```
 
@@ -32,25 +32,51 @@ theme_set(theme_light())
   - Calculate age from birth year
   - Add scaled frequencies
 ```{r preprocess}
+
+df_dob <- 
+  read_csv("data/paper2/raw/dob.csv", 
+             col_types = cols(voter_registration_number = "c")) %>% 
+  select(voter_reg_num = voter_registration_number, dob = bday)
+
 (df_a <- 
-    read_delim("data/apr13.txt", delim = "\t") %>% 
-    rename(name_suffix = name_sufx_cd) %>% 
+    read_delim("data/paper2/raw/apr13.txt", delim = "\t") %>% 
+    rename(name_suffix = name_sufx_cd,
+           mname = midl_name) %>% 
     mutate_if(is.character, str_squish) %>% 
     mutate(id_a = row_number()))
+
   
 (df_b <- 
-    read_delim("data/mar17.txt", delim = "\t") %>% 
-    rename(name_suffix = name_suffix_lbl) %>% 
+    read_delim("data/paper2/raw/mar17.txt", delim = "\t") %>% 
+    rename(name_suffix = name_suffix_lbl,
+           mname = middle_name) %>% 
     mutate_if(is.character, str_squish) %>% 
     mutate(id_b = row_number()))
-  
+
 (df_a_mod <- 
   df_a %>% 
-  preprocess_data())
+  preprocess_data(df_dob))
 
 (df_b_mod <- 
     df_b %>% 
-    preprocess_data(year_a = F))
+    preprocess_data(df_dob))
+
+# df_a_mod <- df_a_mod %>%
+#   filter(!is.na(birth_year)) %>% 
+#   prep_data() %>%
+#     mess_data(df_error_table %>% 
+#                 mutate(amount = amount*40/10)) %>% 
+#     pluck("df_secondary") %>% 
+#     select(-file, -id) %>% 
+#     mutate_if(is.character, str_to_upper) %>% 
+#     mutate(birth_year = as.integer(birth_year)) %>% 
+#     select(-ffreq, -lfreq) %>% 
+#     add_count(fname) %>%
+#     rename(ffreq = n) %>% 
+#     add_count(lname) %>% 
+#     rename(lfreq = n) %>% 
+#     mutate(ffreq = scale(ffreq),
+#            lfreq = scale(lfreq))
 
 ```
 
@@ -64,9 +90,11 @@ theme_set(theme_light())
 ```{r matches}
 (df_exact_matches <- 
     df_a_mod %>% 
-    select(id_a, fname, lname, birth_year, gender_code, race_code) %>% 
+    select(id_a, fname, mname, lname, 
+           dob, gender_code, race_code) %>% 
     inner_join(df_b_mod %>% 
-                 select(id_b, fname, lname, birth_year, gender_code, race_code)) %>% 
+                 select(id_b, fname, mname, lname, 
+                        dob, gender_code, race_code)) %>% 
     select(starts_with("id")))
 
 (df_vrn_matches <- 
@@ -80,14 +108,14 @@ theme_set(theme_light())
   distinct())
 
   
-df_matches_unexact <- 
+(df_matches_unexact <- 
   df_vrn_matches  %>% 
   anti_join(df_exact_matches) %>% 
   left_join(df_a_mod, by = "id_a") %>% 
   left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
-  mutate(pair_id = row_number())
+  mutate(pair_id = row_number()))
 
-data_path <- "data/paper/"
+data_path <- "data/paper2/"
 data_path_file <- function(file_name) glue("{data_path}{file_name}")
 
 if(dir_exists(data_path)){
@@ -103,7 +131,7 @@ if(dir_exists(data_path)){
 ```{r unmatches, eval=FALSE}
 df_match_block <- 
   df_matches_unexact %>% 
-  select(matches(or("id", "fname", "lname"))) %>% 
+  select(matches(or("id", "fname", "lname", "dob"))) %>% 
   mutate(fname_soundex_a = soundex(fname_a),
          fname_soundex_b = soundex(fname_b),
          fname_dm_a = map(fname_a, DoubleMetaphone),
@@ -119,8 +147,9 @@ df_match_block <-
          lname_dm2_a = map_chr(lname_dm_a, 2),
          lname_dm_b = map(lname_b, DoubleMetaphone),
          lname_dm1_b = map_chr(lname_dm_b, 1),
-         lname_dm2_b = map_chr(lname_dm_b, 2)) %>% 
-  select(-fname_dm_a, -fname_dm_b, -lname_dm_a, -lname_dm_b)
+         lname_dm2_b = map_chr(lname_dm_b, 2)
+         ) %>% 
+  select(-fname_dm_a, -fname_dm_b) #, -lname_dm_a, -lname_dm_b)
 
 df_a_block <- 
   df_a_mod %>% 
@@ -175,18 +204,18 @@ df_all_combos <-
       inner_join(df_b_block, by = c("fname_dm2_a" = "fname_dm2_b")) %>% 
       select(id_a, id_b),
     
-    df_match_block_a %>% 
-      inner_join(df_b_block, by = c("lname_soundex_a" = "lname_soundex_b")) %>% 
+    df_match_block_a %>%
+      inner_join(df_b_block, by = c("lname_soundex_a" = "lname_soundex_b")) %>%
       select(id_a, id_b),
-    
-    df_match_block_a %>% 
-      inner_join(df_b_block, by = c("lname_dm1_a" = "lname_dm1_b")) %>% 
+
+    df_match_block_a %>%
+      inner_join(df_b_block, by = c("lname_dm1_a" = "lname_dm1_b")) %>%
       select(id_a, id_b),
-    
-    df_match_block_a %>% 
-      inner_join(df_b_block, by = c("lname_dm2_a" = "lname_dm2_b")) %>% 
+
+    df_match_block_a %>%
+      inner_join(df_b_block, by = c("lname_dm2_a" = "lname_dm2_b")) %>%
       select(id_a, id_b),
-    
+
     df_match_block_b %>% 
       inner_join(df_a_block, by = c("fname_soundex_b" = "fname_soundex_a")) %>% 
       select(id_a, id_b),
@@ -199,20 +228,33 @@ df_all_combos <-
       inner_join(df_a_block, by = c("fname_dm2_b" = "fname_dm2_a")) %>% 
       select(id_a, id_b),
     
-    df_match_block_b %>% 
-      inner_join(df_a_block, by = c("lname_soundex_b" = "lname_soundex_a")) %>% 
+    df_match_block_b %>%
+      inner_join(df_a_block, by = c("lname_soundex_b" = "lname_soundex_a")) %>%
       select(id_a, id_b),
-    
-    df_match_block_b %>% 
-      inner_join(df_a_block, by = c("lname_dm1_b" = "lname_dm1_a")) %>% 
+
+    df_match_block_b %>%
+      inner_join(df_a_block, by = c("lname_dm1_b" = "lname_dm1_a")) %>%
       select(id_a, id_b),
-    
-    df_match_block_b %>% 
-      inner_join(df_a_block, by = c("lname_dm2_b" = "lname_dm2_a")) %>% 
+
+    df_match_block_b %>%
+      inner_join(df_a_block, by = c("lname_dm2_b" = "lname_dm2_a")) %>%
       select(id_a, id_b)
   ) %>% 
-  distinct()
+  distinct() %>% 
+  anti_join(df_vrn_matches) %>% 
+  anti_join(df_exact_matches)
 
+# added
+df_all_combos <- 
+  df_all_combos %>% 
+  left_join(df_a_mod %>% select(id_a, dob), 
+            by = "id_a") %>% 
+  left_join(df_b_mod %>% select(id_b, dob), 
+            by = "id_b", 
+            suffix = c("_a", "_b")) %>%
+  filter(abs(year(dob_a) - year(dob_b)) <=2|
+         stringdist(year(dob_a),year(dob_b)) <= 1) %>% 
+  select(-dob_a, -dob_b)
 
 df_all_combos_nested <- 
   df_all_combos %>% 
@@ -221,50 +263,79 @@ df_all_combos_nested <-
   group_by(id_a, id_b) %>% 
   nest()
 
-n_unique <- function(x) x %>% unique() %>% length()
-rename_weight <- function(x) str_c(x, "_weight")
-df_to_vector <- function(df) df %>% .[1, ] %>% unclass() %>% as.double()
-
-weight_vector <- 
+df_weight_vector <- 
   df_a_mod %>% 
   bind_rows(df_b_mod) %>% 
-  select(fname, gender_code, race_code, birth_year) %>% 
+  select(fname, mname, lname, gender_code, race_code, dob) %>% 
+  mutate(year = year(dob),
+         md = glue("{month(dob)}-{day(dob)}")) %>% 
+  # select(-dob) %>% 
   summarise_all(n_unique) %>% 
-  rename_all(rename_weight) %>% 
-  mutate(sum = 
-           fname_weight + 
-           # lname_weight + 
-           gender_code_weight +
-           race_code_weight +
-           birth_year_weight) %>% 
-  mutate_all(function(x, all) x/all, all = .$sum) %>% 
-  select(-sum) %>% 
-  df_to_vector()
+  rename_all(rename_weight) %>%
+  gather(col, val) %>% 
+  mutate(val = val/sum(val),
+         val = map2_dbl(col, val, function(x,y){
+           names(y) <- x
+           y
+         })) %>% 
+  arrange(col)
 
+weight_vector <- df_weight_vector$val
+names(weight_vector) <- df_weight_vector$col
 
+number_of_sims <- nrow(df_all_combos_nested)
+message(glue("Number of rows: {number_of_sims}"))
+time_start <- Sys.time()
 df_all_combos_nested_sim <- 
   df_all_combos_nested %>% 
-  mutate(x = map_dbl(data, calculate_hamming_fields))
+  mutate(x = map2_dbl(row_number(), data, function(i, df){
+    if(i%%1000 == 0){
+      message(
+        glue("{i}/{number_of_sims} records: {round(i*100/number_of_sims, 2)}%- {round(as.numeric(Sys.time()-time_start,units='mins'), 1)} minutes elapsed"))
+      # message(Sys.time() - time_start)
+    }
+    calculate_hamming_fields(df, weight_vector)
+  }),
+  match = "unmatch")
 
-df_unmatches_unexact <- 
+k <- 1
+(df_unmatches_unexact <- 
   df_all_combos_nested_sim %>% 
-  semi_join(df_matches_unexact, by = "id_a") %>% 
+  # semi_join(df_matches_unexact, by = "id_a") %>%
   group_by(id_a) %>% 
   arrange(desc(x), .by_group = T) %>% 
-  slice(1:5) %>% 
+  slice(1:k) %>% 
   ungroup() %>% 
-  select(starts_with("id")) %>% 
+  bind_rows(
+    df_all_combos_nested_sim %>% 
+    # semi_join(df_matches_unexact, by = "id_b") %>%
+    group_by(id_b) %>% 
+    arrange(desc(x), .by_group = T) %>% 
+    slice(1:k) %>% 
+    ungroup() 
+  ) %>%
+  arrange(desc(x)) %>% 
+  select(starts_with("id"), match) %>% 
+  distinct() %>% 
+  slice(1:(4*nrow(df_matches_unexact))) %>% 
   left_join(df_a_mod, by = "id_a") %>%
   left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
-  mutate(pair_id = 986398  + row_number()) %>%  
-  mutate(match = "unmatch")
+  mutate(pair_id = 986398  + row_number())) 
+
+df_unmatches_unexact %>% vectors_to_pairs() %>% View()
+df_all_combos_nested_sim %>% 
+  left_join(df_a_mod, by = "id_a") %>%
+  left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
+  arrange(desc(x), id_a) %>% 
+  vectors_to_pairs() %>% 
+  View()
 
 (df_unmatches_unexact %>% 
   write_rds(data_path_file("df_unmatches_unexact.rds")))
 ```
 
 ```{r read_executed_unmatch, echo=FALSE}
-read_data("data/paper/df_unmatches_unexact.rds")
+read_data("data/paper2/df_unmatches_unexact.rds")
 df_unmatches_unexact
 ```
 
@@ -291,7 +362,7 @@ The above pipeline was wrapped into a function, so that database A can be made n
 
 ```
 df_error_table <- 
-  read_csv("R/paper/error_table.csv")
+  read_csv("R/paper2/error_table.csv")
 
 set.seed(13)
 df_messed_collection <- 
@@ -330,14 +401,14 @@ df_messed_collection <-
   }))
 
 df_messed_collection %>%
-  write_rds("data/paper/error_data/df_messed_collection.rds")
+  write_rds("data/paper2/error_data/df_messed_collection.rds")
 
 df_messed_collection
 ```
 
 ```{r read df_pairs_collection, echo=FALSE}
 (df_messed_collection <- 
-  read_rds("data/paper/error_data/df_messed_collection.rds"))
+  read_rds("data/paper2/error_data/df_messed_collection.rds"))
 ```
 
 
@@ -358,14 +429,14 @@ df_messed_collection <-
   
 
 df_messed_collection %>%
-  write_rds("data/paper/error_data/df_feature_collection.rds")
+  write_rds("data/paper2/error_data/df_feature_collection.rds")
   
 df_messed_collection
 ```
 
 ```{r read df_feature_collection, echo=FALSE}
 (df_messed_collection <- 
-  read_rds("data/paper/error_data/df_feature_collection.rds"))
+  read_rds("data/paper2/error_data/df_feature_collection.rds"))
 ```
 
 One df_feature dataframe looks like these.
@@ -461,14 +532,14 @@ df_messed_collection <-
 
 
 df_messed_collection %>% 
-  write_rds("data/paper/error_data/df_messed_collection_models.rds")
+  write_rds("data/paper2/error_data/df_messed_collection_models.rds")
   
 df_messed_collection
 ```
 
 ```{r read_models,echo=FALSE}
 (df_messed_collection <- 
-  read_rds("data/paper/error_data/df_messed_collection_models.rds"))
+  read_rds("data/paper2/error_data/df_messed_collection_models.rds"))
 
 df_messed_collection <- 
   df_messed_collection %>% 

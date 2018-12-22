@@ -1,8 +1,7 @@
 error,amount,col_names,arguments
-swap_fields,0.1,"lname, fname",
-first_letter_abbreviate,0.05,fname,
+repl,0.03,"birth_year",
 real_to_nicknames,0.05,fname,
-indel,0.1,lname,
-repl,0.1,"lname, fname, birth_year",
-tpose,0.1,"lname, fname, birth_year",
-married_name_change,0.1,,"lname = 'lname', sex = 'gender_code'"
+indel,0.02,fname,
+repl,0.02,fname,
+tpose,0.02,fname,
+indel,0.05,lname,
