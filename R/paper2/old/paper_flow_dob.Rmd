@@ -1,0 +1,500 @@
+---
+title: "Paper flow"
+author: "Gurudev Ilangovan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    df_print: tibble
+    highlight: tango
+    theme: flatly
+    toc: yes
+    toc_depth: 5
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true 
+    code_folding: hide
+---
+
+```{r setup, results="hide"}
+knitr::opts_chunk$set(cache = F, message = FALSE)
+source("R/paper2/utils.R")
+theme_set(theme_light())
+```
+
+# Data Generation - The pipeline
+
+## Preprocessing
+
+1. Read April 2013 data and March 17 data. 
+2. Do some basic preprocessing
+  - Assign ids
+  - Calculate age from birth year
+  - Add scaled frequencies
+```{r preprocess}
+
+df_dob <- 
+  read_csv("data/paper2/raw/dob.csv", 
+             col_types = cols(voter_registration_number = "c")) %>% 
+  select(voter_reg_num = voter_registration_number, dob = bday) %>% 
+  mutate(dob_twin = dob)
+
+(df_a <- 
+    read_delim("data/paper2/raw/apr13.txt", delim = "\t") %>% 
+    rename(name_suffix = name_sufx_cd,
+           mname = midl_name) %>% 
+    mutate_if(is.character, str_squish))
+
+  
+(df_b <- 
+    read_delim("data/paper2/raw/mar17.txt", delim = "\t") %>% 
+    rename(name_suffix = name_suffix_lbl,
+           mname = middle_name) %>% 
+    mutate_if(is.character, str_squish))
+
+(df_a_mod <- 
+  df_a %>% 
+  preprocess_data(df_dob) %>% 
+  filter(!is.na(dob)) %>% 
+  prep_data() %>% 
+  mess_data(read_csv("R/paper2/error_table.csv") %>% 
+              mutate(amount = amount*4)) %>% 
+  pluck("df_secondary") %>% 
+  select(-file,-id))
+
+(df_b_mod <- 
+    df_b %>% 
+    preprocess_data(df_dob) %>% 
+    filter(!is.na(dob)))
+
+df_a_mod <- 
+  df_a_mod %>% 
+    mutate(id_a = row_number())
+
+df_b_mod <- 
+  df_b_mod %>% 
+    mutate(id_b = row_number())
+
+# df_a_mod <- df_a_mod %>%
+#   filter(!is.na(birth_year)) %>% 
+#   prep_data() %>%
+#     mess_data(df_error_table %>% 
+#                 mutate(amount = amount*40/10)) %>% 
+#     pluck("df_secondary") %>% 
+#     select(-file, -id) %>% 
+#     mutate_if(is.character, str_to_upper) %>% 
+#     mutate(birth_year = as.integer(birth_year)) %>% 
+#     select(-ffreq, -lfreq) %>% 
+#     add_count(fname) %>%
+#     rename(ffreq = n) %>% 
+#     add_count(lname) %>% 
+#     rename(lfreq = n) %>% 
+#     mutate(ffreq = scale(ffreq),
+#            lfreq = scale(lfreq))
+
+```
+
+
+## Match generation
+
+1. Extract exact matches
+2. Extract voter id matches
+3. Filter out exact matches from voter id matches -> matches
+
+```{r matches}
+(df_exact_matches <- 
+    df_a_mod %>% 
+    select(id_a, fname, lname, 
+           dob, gender_code, race_code) %>% 
+    inner_join(df_b_mod %>% 
+                 select(id_b, fname, lname, 
+                        dob, gender_code, race_code)) %>% 
+    select(starts_with("id")))
+
+(df_vrn_matches <- 
+  df_a_mod %>% 
+  select(id_a, voter_reg_num) %>% 
+  inner_join(df_b_mod %>% 
+               select(id_b, voter_reg_num), 
+             by = "voter_reg_num") %>% 
+  select(starts_with("id")) %>% 
+  mutate(match = "match") %>% 
+  distinct())
+
+  
+(df_matches_unexact <- 
+  df_vrn_matches  %>% 
+  anti_join(df_exact_matches) %>% 
+  left_join(df_a_mod, by = "id_a") %>% 
+  left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
+  mutate(pair_id = row_number()))
+
+data_path <- "data/paper2/"
+data_path_file <- function(file_name) glue("{data_path}{file_name}")
+
+if(dir_exists(data_path)){
+  dir_create(data_path)
+}
+
+(df_matches_unexact %>% 
+  write_rds(data_path_file("df_matches_unexact.rds")))
+```
+
+## Unmatch generation
+
+```{r unmatches, eval=FALSE}
+df_blocks <- 
+  bind_rows(
+    
+    df_matches_unexact %>% 
+      select(id_a, fname_a) %>%
+      inner_join(df_b_mod %>% select(id_b, fname),
+                 by = c("fname_a" = "fname")) %>% 
+      select(id_a, id_b),
+    
+    df_matches_unexact %>% 
+      select(id_b, fname_b) %>%
+      inner_join(df_a_mod %>% select(id_a, fname),
+                 by = c("fname_b" = "fname")) %>% 
+      select(id_a, id_b),
+    
+    df_matches_unexact %>% 
+      select(id_a, lname_a) %>%
+      inner_join(df_b_mod %>% select(id_b, lname),
+                 by = c("lname_a" = "lname")) %>% 
+      select(id_a, id_b),
+    
+    df_matches_unexact %>% 
+      select(id_b, lname_b) %>%
+      inner_join(df_a_mod %>% select(id_a, lname),
+                 by = c("lname_b" = "lname")) %>% 
+      select(id_a, id_b),
+    
+    df_matches_unexact %>% 
+      select(id_a, dob_a) %>%
+      inner_join(df_b_mod %>% select(id_b, dob),
+                 by = c("dob_a" = "dob")) %>% 
+      select(id_a, id_b),
+    
+    df_matches_unexact %>% 
+      select(id_b, dob_b) %>%
+      inner_join(df_a_mod %>% select(id_a, dob),
+                 by = c("dob_b" = "dob")) %>% 
+      select(id_a, id_b)
+    
+  ) %>% 
+  distinct() %>% 
+  anti_join(df_exact_matches, by = c("id_a", "id_b")) %>% 
+  anti_join(df_vrn_matches, by = c("id_a", "id_b")) %>% 
+  attach_dbs_to_ids() %>% 
+  distinct()
+
+df_blocks <- 
+  df_blocks %>% 
+  mutate(fname_jw = stringdist(fname_a, fname_b, "jw", p = 0.1), 
+         lname_jw = stringdist(lname_a, lname_b, "lv", p = 0.1), 
+         day_match = day(dob_a) == day(dob_b),
+         month_match = month(dob_a) == month(dob_b),
+         year_match = year(dob_a) == year(dob_b),
+         swap_match = (day(dob_a) == month(dob_b)) & (day(dob_b) == month(dob_a))) %>% 
+  select(id_a, id_b, contains("jw"), contains("match"))
+
+
+
+df_thresholds <- 
+  df_blocks %>% 
+  mutate(thresh_fname = fname_jw < 0.15,
+         thresh_lname = lname_jw < 0.15,
+         thresh_dob = 
+           (day_match + month_match + swap_match + year_match) >= 2,
+         thresh_criteria = thresh_fname + thresh_lname + thresh_dob,
+         
+         thresh_weight = 
+           (1 - fname_jw) + 
+           (1 - lname_jw) + 
+           (day_match + month_match + swap_match + year_match)/3) %>% 
+  select(contains("id"), contains("thresh"))
+
+df_thresholds %>% 
+  ggplot(aes(thresh_weight)) +
+  geom_histogram()
+
+df_thresholds %>% 
+  count(thresh_criteria)
+
+(df_unmatches <- 
+  df_thresholds %>% 
+  sample_n(nrow(.)) %>% 
+  arrange(desc(thresh_criteria)) %>% 
+  # top_n(4*nrow(df_matches_unexact), thresh_weight) %>% 
+  slice(1:(4*nrow(df_matches_unexact))) %>% 
+  select(contains(("id"))) %>% 
+  mutate(match = "unmatch") %>% 
+  attach_dbs_to_ids())
+
+df_unmatches %>% 
+  vectors_to_pairs() %>% 
+  View()
+
+
+```
+
+```{r read_executed_unmatch, echo=FALSE}
+read_data("data/paper2/df_unmatches_unexact.rds")
+df_unmatches_unexact
+```
+
+## Pair Generation
+
+```{r pairs}
+set.seed(1)
+df_pairs <- 
+  df_unmatches_unexact %>%
+  bind_rows(df_matches_unexact) %>% 
+  sample_n((nrow(.)))
+
+(df_pairs %>% 
+  write_rds(data_path_file("df_pairs.rds")))
+
+(df_pairs %>% 
+  vectors_to_pairs())
+```
+
+
+# Disturbing data
+
+The above pipeline was wrapped into a function, so that database A can be made noisy and the pair generation can be repeated. 
+
+```
+df_error_table <- 
+  read_csv("R/paper2/error_table.csv")
+
+set.seed(13)
+df_messed_collection <- 
+  tibble(error_rate = seq(0, 40, 10)) %>% 
+    mutate(df_a_mod = map(error_rate, function(e){
+      # browser()
+      df_a_mod %>%
+        prep_data() %>%
+        mess_data(df_error_table %>% 
+                    mutate(amount = amount*e/10)) %>% 
+        pluck("df_secondary") %>% 
+        select(-file, -id) %>% 
+        mutate_if(is.character, str_to_upper) %>% 
+        mutate(birth_year = as.integer(birth_year)) %>% 
+        select(-ffreq, -lfreq) %>% 
+        add_count(fname) %>%
+        rename(ffreq = n) %>% 
+        add_count(lname) %>% 
+        rename(lfreq = n) %>% 
+        mutate(ffreq = scale(ffreq),
+               lfreq = scale(lfreq))
+    }))
+
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(df_pairs = map2(df_a_mod, error_rate, function(df_a_mod, e) {
+    message("________________________")
+    message(glue("Error rate: {e}%"))
+    
+    generate_pairs(df_a_mod = df_a_mod, 
+                   df_b_mod = df_b_mod, 
+                   data_pref = 
+                     e %>% 
+                     str_pad(width = 2, side = "left", pad = "0") %>% 
+                     str_c("err_", .))
+  }))
+
+df_messed_collection %>%
+  write_rds("data/paper2/error_data/df_messed_collection.rds")
+
+df_messed_collection
+```
+
+```{r read df_pairs_collection, echo=FALSE}
+(df_messed_collection <- 
+  read_rds("data/paper2/error_data/df_messed_collection.rds"))
+```
+
+
+# Feature Engineering
+
+Using a function called add_feature_vector to generate features. 
+
+```
+df_messed_collection <-
+  df_messed_collection %>% 
+  mutate(df_feature = map(df_pairs, function(df_pair){
+    df_pair %>%
+      add_feature_vector() %>%
+      select(starts_with("metric"), match) %>%
+      mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
+      as.data.frame()
+  }))
+  
+
+df_messed_collection %>%
+  write_rds("data/paper2/error_data/df_feature_collection.rds")
+  
+df_messed_collection
+```
+
+```{r read df_feature_collection, echo=FALSE}
+(df_messed_collection <- 
+  read_rds("data/paper2/error_data/df_feature_collection.rds"))
+```
+
+One df_feature dataframe looks like these.
+```{r view df_feature}
+df_messed_collection$df_feature[[1]]
+```
+
+
+# Modeling
+
+## Modeling setup
+
+```{r train_test_split}
+sample_strat <- function(df, n = 5000){
+  match <- df$match
+  row_num <- 1:nrow(df)
+  
+  m = ceiling(n/6)
+  u = n - m
+  
+  indices_m = sample(row_num[match == "match"], m)
+  indices_u = sample(row_num[match == "unmatch"], u)
+  
+  sample(c(indices_u, indices_m), n)
+}
+
+df_all <- 
+  df_messed_collection$df_feature[[1]]
+
+set.seed(23)
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(train_indices = map(df_pairs, sample_strat, n = 5000),
+         test_indices = map2(df_feature, train_indices, function(df, t){
+           (1:nrow(df))[-t]
+         }),
+         df_train = map2(df_feature, train_indices, function(df, t){
+           df[t, ]
+         }),
+         df_test =  
+           pmap(list(df_pairs, df_feature, test_indices), 
+                         function(pairs, df, v){
+                           bind_cols(pairs, df) %>% 
+                             as.data.frame() %>% 
+                             .[v, ]
+                         }))
+
+
+train_control <- 
+  trainControl(method = "cv", 
+               number = 10,
+               verboseIter = FALSE,
+               savePredictions = TRUE,
+               classProbs = TRUE)
+```
+
+
+```
+  
+df_messed_collection <- 
+  df_messed_collection %>% 
+  mutate(
+    model_rf = map(df_train, function(df_tr){
+      # browser()
+      set.seed(3)
+      train(match ~ .,
+            df_tr,
+            trControl = train_control,
+            tuneGrid = expand.grid(.mtry = seq(1, 6, 1)),
+            importance = TRUE,
+            keep.forest= TRUE,
+            ntree = 350,
+            method = "rf")
+    }),
+    model_svm_radial = map(df_train, function(df_tr){
+        # browser()
+        set.seed(3)
+        train(match ~ .,
+              df_tr,
+              trControl = train_control,
+              method = "svmRadial")
+      }),
+    model_svm_linear = map(df_train, function(df_tr){
+      # browser()
+      set.seed(3)
+      train(match ~ .,
+            df_tr,
+            trControl = train_control,
+            method = "svmLinear") 
+  })
+  )
+
+
+
+df_messed_collection %>% 
+  write_rds("data/paper2/error_data/df_messed_collection_models.rds")
+  
+df_messed_collection
+```
+
+```{r read_models,echo=FALSE}
+(df_messed_collection <- 
+  read_rds("data/paper2/error_data/df_messed_collection_models.rds"))
+
+df_messed_collection <- 
+  df_messed_collection %>% 
+  gather(model, model_obj, starts_with("model")) %>% 
+  select(model, everything()) %>% 
+  mutate(model = model %>% str_replace("model_", ""))
+```
+
+
+```{r test_set_evaluation}
+df_messed_collection <- 
+  df_messed_collection %>%
+  mutate(
+    results = map2(model_obj, df_test, function(model, df){
+      df %>%
+      mutate(pair_id = 1:nrow(.)) %>%
+      evaluate_model(model, df_test = ., plot_roc = F)
+    }),
+    metrics = map(results, ~.x$metrics$df_metric_table),
+    confusion_matrix = map(results, ~.x$metrics$confusion_matrix),
+    roc_curve = map(results, ~.x$metrics$roc_curve),
+    pred_confidence = map(results, ~.x$confidence)
+  )
+
+df_model_metrics <-
+  df_messed_collection %>%
+  select(model, error_rate, metrics) %>%
+  unnest(metrics)
+
+
+
+plot_roc_all(df_messed_collection %>% filter(model == "svm_radial"),
+             model_col = error_rate)
+
+df_model_metrics %>%
+  filter(metric %in% c("accuracy", "precision", "recall", "f1","auc")) %>%
+  ggplot(aes(error_rate, value, group = metric, col = metric)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(breaks = seq(0, 1, 0.2), 
+                     limits = c(0, 1), 
+                     minor_breaks = NULL)+
+  theme_light()
+
+df_model_metrics %>% 
+  filter(metric %in% c("accuracy", "precision", "recall", "f1","auc")) %>%
+  ggplot(aes(model, value, fill = model)) +
+  geom_col(position = "dodge") +
+  facet_grid(error_rate~metric) +
+  coord_flip()
+  
+
+```

@@ -5,9 +5,10 @@ if(!"pacman" %in% installed.packages()){
 
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, lubridate,
                rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
-               PGRdup, doParallel, pushoverr, rlErrorGeneratoR, pROC)
+               PGRdup, doParallel, pushoverr, rlErrorGeneratoR, pROC,
+               scico, RColorBrewer, ggthemes, LaCroixColoR, plotly)
 
-# source("data/credentials.R")
+# source("data/ credentials.R")
 
 
 # preprocessing ------------------------------------------------------
@@ -54,24 +55,24 @@ preprocess_data <- function(df,df_dob){
   
   df  %>% 
     select(starts_with("id"), 
-           fname = first_name, mname, lname = last_name, 
+           fname = first_name, lname = last_name, 
            birth_age, gender_code, race_code, 
            voter_reg_num, name_suffix) %>% #, ncid
-    left_join(df_dob) %>% 
+    left_join(df_dob, by = "voter_reg_num") %>% 
     mutate(birth_age = birth_age %>% as.integer(),
            name_suffix = if_else(is.na(name_suffix), "", name_suffix),
-           mname = if_else(is.na(mname), "", mname),
-           lname = glue("{lname} {name_suffix}") %>% str_trim(),
-           # fmname =  glue("{fname} {mname}") %>% str_trim(),
            birth_year = year(dob)
            ) %>% 
-    select(-name_suffix) %>% 
-    add_count(fname) %>%
-    rename(ffreq = n) %>%
-    add_count(lname) %>%
-    rename(lfreq = n) %>%
-    mutate(ffreq = scale(ffreq),
-           lfreq = scale(lfreq))
+    mutate_if(is.character, str_to_lower) %>% 
+    add_count_name(fname, "ffreq", T) %>%
+    add_count_name(lname, "lfreq", T)  %>% 
+    mutate(lname = glue("{lname} {name_suffix}") %>% str_trim()) %>% 
+    select(-name_suffix)
+  
+  # mname
+  # mname = if_else(is.na(mname), "", mname),
+  # fmname =  glue("{fname} {mname}") %>% str_trim(),
+  
 }
 
 # views -----------------------------------------------------------------
@@ -101,7 +102,7 @@ vectors_to_pairs <- function(df, View = F){
     bind_rows(df_a, df_b) %>%
     arrange(pair_id) %>% 
     select(pair_id, 
-           fname, mname, lname, gender_code, race_code, birth_year, 
+           fname, lname, gender_code, race_code, birth_year, 
            match, everything())
   
   if(View){
@@ -140,10 +141,25 @@ pairs_to_vectors <- function(df){
   df_a %>% 
     left_join(df_b) %>% 
     select(pair_id, 
-           id_a, fname_a, lname_a, birth_year_a, bplstr_a, gender_code_a, race_code_a,
-           id_b, fname_b, lname_b, birth_year_b, bplstr_b, gender_code_b, race_code_b, 
+           id_a, fname_a, lname_a, birth_year_a, contains("bplstr_a"), 
+           gender_code_a, race_code_a,
+           id_b, fname_b, lname_b, birth_year_b, contains("bplstr_b"), 
+           gender_code_b, race_code_b, 
            everything())
 }
+
+attach_dbs_to_ids <- function(df_id){
+  df_id %>% 
+    left_join(df_a_mod, by = "id_a") %>% 
+    left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b"))
+}
+
+attach_dbs_to_ids_dfs <- function(df_id, df_a_mod, df_b_mod){
+  df_id %>% 
+    left_join(df_a_mod, by = "id_a") %>% 
+    left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b"))
+}
+
 
 
 
@@ -169,36 +185,96 @@ summarise_all_string_metrics <- function(x, y, col_name){
     spread(metric, dists)
 }
 
-add_feature_vector <- function(df){
+add_feature_vector <- function(df, df_a_mod, df_b_mod){
   # browser()
+
   df %>%
+    select(-contains("freq")) %>% 
+    left_join(df_a_mod %>% 
+                count(fname) %>% 
+                rename(fname_a = fname,
+                       ffreq_a = n) %>% 
+                mutate(ffreq_a = scale(ffreq_a)[,1])) %>% 
+    left_join(df_a_mod %>% 
+                count(lname) %>% 
+                rename(lname_a = lname,
+                       lfreq_a = n) %>% 
+                mutate(lfreq_a = scale(lfreq_a)[,1])) %>% 
+    left_join(df_b_mod %>% 
+                count(fname) %>% 
+                rename(fname_b = fname,
+                       ffreq_b = n) %>% 
+                mutate(ffreq_b = scale(ffreq_b)[,1])) %>% 
+    left_join(df_b_mod %>% 
+                count(lname) %>% 
+                rename(lname_b = lname,
+                       lfreq_b = n) %>% 
+                mutate(lfreq_b = scale(lfreq_b)[,1])) %>%
     mutate(pair_id = row_number(),
-           birth_year_a = as.double(birth_year_a),
-           birth_year_b = as.double(birth_year_b),
+           # dob
+           birth_year_a = as.double(year(dob_a)),
+           birth_year_b = as.double(year(dob_b)),
+           birth_day_a = as.double(day(dob_a)),
+           birth_day_b = as.double(day(dob_b)),
+           birth_month_a = as.double(month(dob_a)),
+           birth_month_b = as.double(month(dob_b)),
+           year_diff = as.integer(birth_year_a) - as.integer(birth_year_b),
+           metric_dob_dist = stringdist(dob_a, dob_b, "dl"),
+           metric_year_dist = stringdist(birth_year_a, birth_year_b, "dl"),
+           metric_month_dist = stringdist(birth_month_a, birth_month_b, "dl"),
+           metric_day_dist = stringdist(birth_day_a, birth_day_b, "dl"),
+           metric_dm_swaps = 
+             ((!is.na(dob_a)) & (!is.na(dob_b))) &
+             (birth_month_a == birth_day_b) & 
+             (birth_month_b == birth_day_a),
+           metric_age_a = as.double(ymd("2013-04-30") - dob_a)/365,
+           metric_age_b = as.double(ymd("2017-03-31") - dob_b)/365,
+           
+           # fname
            fname_metrics = map2(fname_a, fname_b, 
                                 summarise_all_string_metrics, "fname"),
-           mname_metrics = map2(mname_a, mname_b, 
-                                summarise_all_string_metrics, "mname"),
+           metric_ffreq_a = ffreq_a,
+           metric_ffreq_b = ffreq_b,
+           # metric_ffreq_mean = map2_dbl(ffreq_a, ffreq_b, ~mean(c(.x,.y))),
+           # metric_ffreq_diff = abs(ffreq_a - ffreq_b),
+           
+           # lname
            lname_metrics = map2(lname_a, lname_b, 
                                 summarise_all_string_metrics, "lname"),
+           metric_lfreq_a = lfreq_a,
+           metric_lfreq_b = lfreq_b,
+           # metric_lfreq_mean = map2_dbl(lfreq_a, lfreq_b, ~mean(c(.x,.y))),
+           
+           # name swaps
+           metric_name_swaps = 
+             ((!is.na(fname_a)) & (!is.na(fname_b)) & 
+                (!is.na(lname_a)) & (!is.na(lname_b))) &
+             (lname_a == fname_b) & 
+             (lname_b == fname_a),
+           
+           # gender
            gender_code = map2_chr(gender_code_a, gender_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
-           metric_gender_code_ff = gender_code  %>% str_count("F"),
-           metric_gender_code_mm = gender_code  %>% str_count("M"),
+           metric_gender_code_ff = gender_code  %>% str_count("f"),
+           metric_gender_code_mm = gender_code  %>% str_count("m"),
            # metric_gender_code_same = gender_code_a == gender_code_b,
+           
+           # race
            race_code = map2_chr(race_code_a, race_code_b, function(x, y){
              str_c(sort(c(x, y)), collapse = "")
            }),
            metric_race_code_same = race_code_a == race_code_b,
-           metric_race_code_ww_bb = race_code == "WW" | race_code == "BB" ,
-           year_diff = as.integer(birth_year_a) - as.integer(birth_year_b),
-           metric_year_diff_abs = abs(year_diff),
-           metric_age_b = 2017 - birth_year_b,
-           metric_age_a = 2013 - birth_year_a,
-           metric_dob_dist = stringdist(dob_a, dob_b),
-           metric_ffreq_mean = map2_dbl(ffreq_a, ffreq_b, ~mean(c(.x,.y))),
-           metric_lfreq_mean = map2_dbl(lfreq_a, lfreq_b, ~mean(c(.x,.y))),
+           metric_race_code_ww_bb = race_code == "ww" | race_code == "bb",
+           
+           # marriage
+           metric_potential_marriage = 
+             (!is.na(metric_age_a) | !is.na(metric_age_b)) &
+             ((metric_age_a >= 20) | (metric_age_b >= 20)) &
+             (!is.na(lname_a) & !is.na(lname_b)) &
+             (lname_a != lname_b) &
+             (gender_code_a == "f" | gender_code_b == "f")
+           
            # metric_year_align = 
            #   stringdist(birth_year_a, birth_year_b, "dl")/3,
            # fname_letters_a = 
@@ -222,11 +298,12 @@ add_feature_vector <- function(df){
     unnest() %>%
     select(pair_id, 
            fname_a, fname_b,
-           mname_a, mname_b,
+           # mname_a, mname_b,
            lname_a, lname_b,
-           starts_with("birth"), 
+           starts_with("dob"), 
            starts_with("gender_code"), 
            starts_with("race_code"),
+           starts_with("metric"),
            everything()) %>%
     mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
     as.data.frame()
@@ -306,7 +383,7 @@ print.data.frame <- function(df, ...){
 predict_links_raw <- function(model, df_pair_vector){
   
   df_preds <- 
-    predict(model, df_pair_vector , type = "prob") %>% 
+    predict(model, df_pair_vector , type = "prob", na.action = na.pass) %>% 
     as.tibble()
   
   names(df_preds) <- c("unmatch_prob", "match_prob")
@@ -358,13 +435,23 @@ resolve_linkage <- function(df_aug){
 
 
 
-add_count_name <- function(df, var, var_name){
+add_count_name <- function(df, var, var_name, scale = F){
   var_name <- quo_name(var_name)
   var <- enquo(var)
   
+  df <- 
+    df %>% 
+    add_count(!!var)
+  
+  if(scale){
+    df <- 
+      df %>% 
+      mutate(n = scale(n))
+  }
+  
   df %>% 
-    add_count(!!var) %>% 
     rename((!!var_name) := n)
+  
 }
 
 find_best_links_aggregated <- function(df_match){
@@ -443,20 +530,18 @@ link_datasets <- function(df_a, df_b, model){
 }
 
 
-
 generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
   data_path <- "data/paper2/"
   data_path_file <- function(file_name) glue("{data_path}{data_pref}_{file_name}.rds")
   write_rds_mod <-  function(file, file_name) write_rds(file, data_path_file(file_name))
   
-  
   message("Exact matches")
   (df_exact_matches <- 
       df_a_mod %>% 
-      select(id_a, fname, mname, lname, 
+      select(id_a, fname, lname, 
              dob, gender_code, race_code) %>% 
       inner_join(df_b_mod %>% 
-                   select(id_b, fname, mname, lname, 
+                   select(id_b, fname, lname, 
                           dob, gender_code, race_code)) %>% 
       select(starts_with("id")))
   
@@ -486,215 +571,98 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
       left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
       mutate(pair_id = row_number()))
   
+  
   df_matches_unexact %>% 
     write_rds_mod("df_matches_unexact")
   
   message("Generating close non matches")
-  df_match_block <- 
-    df_matches_unexact %>% 
-    select(matches(or("id", "fname", "lname", "dob"))) %>% 
-    mutate(fname_soundex_a = soundex(fname_a),
-           fname_soundex_b = soundex(fname_b),
-           fname_dm_a = map(fname_a, DoubleMetaphone),
-           fname_dm1_a = map_chr(fname_dm_a, 1),
-           fname_dm2_a = map_chr(fname_dm_a, 2),
-           fname_dm_b = map(fname_b, DoubleMetaphone),
-           fname_dm1_b = map_chr(fname_dm_b, 1),
-           fname_dm2_b = map_chr(fname_dm_b, 2),
-           lname_soundex_a = soundex(lname_a),
-           lname_soundex_b = soundex(lname_b),
-           lname_dm_a = map(lname_a, DoubleMetaphone),
-           lname_dm1_a = map_chr(lname_dm_a, 1),
-           lname_dm2_a = map_chr(lname_dm_a, 2),
-           lname_dm_b = map(lname_b, DoubleMetaphone),
-           lname_dm1_b = map_chr(lname_dm_b, 1),
-           lname_dm2_b = map_chr(lname_dm_b, 2)
-    ) %>% 
-    select(-fname_dm_a, -fname_dm_b) #, -lname_dm_a, -lname_dm_b)
-  
-  df_a_block <- 
-    df_a_mod %>% 
-    select(id_a, fname, lname) %>% 
-    rename(fname_a = fname,
-           lname_a = lname) %>% 
-    mutate(fname_soundex_a = soundex(fname_a),
-           fname_dm_a = map(fname_a, DoubleMetaphone),
-           fname_dm1_a = map_chr(fname_dm_a, 1),
-           fname_dm2_a = map_chr(fname_dm_a, 2),
-           lname_soundex_a = soundex(lname_a),
-           lname_dm_a = map(lname_a, DoubleMetaphone),
-           lname_dm1_a = map_chr(lname_dm_a, 1),
-           lname_dm2_a = map_chr(lname_dm_a, 2)) %>% 
-    select(-fname_dm_a, -lname_dm_a)
-  
-  
-  df_b_block <- 
-    df_b_mod %>% 
-    select(id_b, fname, lname) %>% 
-    rename(fname_b = fname,
-           lname_b = lname) %>% 
-    mutate(fname_soundex_b = soundex(fname_b),
-           fname_dm_b = map(fname_b, DoubleMetaphone),
-           fname_dm1_b = map_chr(fname_dm_b, 1),
-           fname_dm2_b = map_chr(fname_dm_b, 2),
-           lname_soundex_b = soundex(lname_b),
-           lname_dm_b = map(lname_b, DoubleMetaphone),
-           lname_dm1_b = map_chr(lname_dm_b, 1),
-           lname_dm2_b = map_chr(lname_dm_b, 2)) %>% 
-    select(-fname_dm_b, -lname_dm_b)
-  
-  df_match_block_a <- 
-    df_match_block %>% 
-    select(contains("_a")) 
-  
-  df_match_block_b <- 
-    df_match_block %>% 
-    select(contains("_b")) 
-  
-  df_all_combos <- 
+  df_blocks <- 
     bind_rows(
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("fname_soundex_a" = "fname_soundex_b")) %>% 
+      
+      df_matches_unexact %>% 
+        select(id_a, fname_a) %>%
+        inner_join(df_b_mod %>% select(id_b, fname),
+                   by = c("fname_a" = "fname")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("fname_dm1_a" = "fname_dm1_b")) %>% 
+      df_matches_unexact %>% 
+        select(id_b, fname_b) %>%
+        inner_join(df_a_mod %>% select(id_a, fname),
+                   by = c("fname_b" = "fname")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>% 
-        inner_join(df_b_block, by = c("fname_dm2_a" = "fname_dm2_b")) %>% 
+      df_matches_unexact %>% 
+        select(id_a, lname_a) %>%
+        inner_join(df_b_mod %>% select(id_b, lname),
+                   by = c("lname_a" = "lname")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>%
-        inner_join(df_b_block, by = c("lname_soundex_a" = "lname_soundex_b")) %>%
+      df_matches_unexact %>% 
+        select(id_b, lname_b) %>%
+        inner_join(df_a_mod %>% select(id_a, lname),
+                   by = c("lname_b" = "lname")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>%
-        inner_join(df_b_block, by = c("lname_dm1_a" = "lname_dm1_b")) %>%
+      df_matches_unexact %>% 
+        select(id_a, dob_a) %>%
+        inner_join(df_b_mod %>% select(id_b, dob),
+                   by = c("dob_a" = "dob")) %>% 
         select(id_a, id_b),
       
-      df_match_block_a %>%
-        inner_join(df_b_block, by = c("lname_dm2_a" = "lname_dm2_b")) %>%
-        select(id_a, id_b),
-      
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("fname_soundex_b" = "fname_soundex_a")) %>% 
-        select(id_a, id_b),
-      
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("fname_dm1_b" = "fname_dm1_a")) %>% 
-        select(id_a, id_b),
-      
-      df_match_block_b %>% 
-        inner_join(df_a_block, by = c("fname_dm2_b" = "fname_dm2_a")) %>% 
-        select(id_a, id_b),
-      
-      df_match_block_b %>%
-        inner_join(df_a_block, by = c("lname_soundex_b" = "lname_soundex_a")) %>%
-        select(id_a, id_b),
-      
-      df_match_block_b %>%
-        inner_join(df_a_block, by = c("lname_dm1_b" = "lname_dm1_a")) %>%
-        select(id_a, id_b),
-      
-      df_match_block_b %>%
-        inner_join(df_a_block, by = c("lname_dm2_b" = "lname_dm2_a")) %>%
+      df_matches_unexact %>% 
+        select(id_b, dob_b) %>%
+        inner_join(df_a_mod %>% select(id_a, dob),
+                   by = c("dob_b" = "dob")) %>% 
         select(id_a, id_b)
+      
     ) %>% 
     distinct() %>% 
-    anti_join(df_vrn_matches) %>% 
-    anti_join(df_exact_matches)
+    anti_join(df_exact_matches, by = c("id_a", "id_b")) %>% 
+    anti_join(df_vrn_matches, by = c("id_a", "id_b")) %>% 
+    attach_dbs_to_ids_dfs(df_a_mod, df_b_mod) %>% 
+    distinct()
   
-  # added
-  df_all_combos <- 
-    df_all_combos %>% 
-    left_join(df_a_mod %>% select(id_a, dob), 
-              by = "id_a") %>% 
-    left_join(df_b_mod %>% select(id_b, dob), 
-              by = "id_b", 
-              suffix = c("_a", "_b")) %>%
-    filter(abs(year(dob_a) - year(dob_b)) <=2|
-             stringdist(year(dob_a),year(dob_b)) <= 1) %>% 
-    select(-dob_a, -dob_b)
-  
-  df_all_combos_nested <- 
-    df_all_combos %>% 
-    left_join(df_a_mod, by = "id_a") %>% 
-    left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>% 
-    group_by(id_a, id_b) %>% 
-    nest()
-  
-  df_exact_matches %>% 
-    write_rds_mod("df_all_combos_nested")
-  
-  df_weight_vector <- 
-    df_a_mod %>% 
-    bind_rows(df_b_mod) %>% 
-    select(fname, mname, lname, gender_code, race_code, dob) %>% 
-    mutate(year = year(dob),
-           md = glue("{month(dob)}-{day(dob)}")) %>% 
-    # select(-dob) %>% 
-    summarise_all(n_unique) %>% 
-    rename_all(rename_weight) %>%
-    gather(col, val) %>% 
-    mutate(val = val/sum(val),
-           val = map2_dbl(col, val, function(x,y){
-             names(y) <- x
-             y
-           })) %>% 
-    arrange(col)
-  
-  weight_vector <- df_weight_vector$val
-  names(weight_vector) <- df_weight_vector$col
-  
-  number_of_sims <- nrow(df_all_combos_nested)
-  message(glue("Number of rows: {number_of_sims}"))
-  time_start <- Sys.time()
-  df_all_combos_nested_sim <- 
-    df_all_combos_nested %>% 
-    mutate(x = map2_dbl(row_number(), data, function(i, df){
-      if(i%%1000 == 0){
-        message(
-          glue("{i}/{number_of_sims} records: {round(i*100/number_of_sims, 2)}%- {round(as.numeric(Sys.time()-time_start,units='mins'), 1)} minutes elapsed"))
-        # message(Sys.time() - time_start)
-      }
-      calculate_hamming_fields(df, weight_vector)
-    }),
-    match = "unmatch")
-  
-  df_exact_matches %>% 
-    write_rds_mod("df_all_combos_nested_sim")
+  df_blocks <- 
+    df_blocks %>% 
+    mutate(fname_jw = stringdist(fname_a, fname_b, "jw", p = 0.1), 
+           lname_jw = stringdist(lname_a, lname_b, "lv", p = 0.1), 
+           day_match = day(dob_a) == day(dob_b),
+           month_match = month(dob_a) == month(dob_b),
+           year_match = year(dob_a) == year(dob_b),
+           swap_match = (day(dob_a) == month(dob_b)) & (day(dob_b) == month(dob_a))) %>% 
+    select(id_a, id_b, contains("jw"), contains("match"))
   
   
-  k <- 1
+  
+  df_thresholds <- 
+    df_blocks %>% 
+    mutate(thresh_fname = fname_jw < 0.15,
+           thresh_lname = lname_jw < 0.15,
+           thresh_dob = 
+             (day_match + month_match + swap_match + year_match) >= 2,
+           thresh_criteria = thresh_fname + thresh_lname + thresh_dob,
+           
+           thresh_weight = 
+             (1 - fname_jw) + 
+             (1 - lname_jw) + 
+             (day_match + month_match + swap_match + year_match)/3) %>% 
+    select(contains("id"), contains("thresh"))
+  
   (df_unmatches_unexact <- 
-      df_all_combos_nested_sim %>% 
-      # semi_join(df_matches_unexact, by = "id_a") %>%
-      group_by(id_a) %>% 
-      arrange(desc(x), .by_group = T) %>% 
-      slice(1:k) %>% 
-      ungroup() %>% 
-      bind_rows(
-        df_all_combos_nested_sim %>% 
-          # semi_join(df_matches_unexact, by = "id_b") %>%
-          group_by(id_b) %>% 
-          arrange(desc(x), .by_group = T) %>% 
-          slice(1:k) %>% 
-          ungroup() 
-      ) %>%
-      arrange(desc(x)) %>% 
-      select(starts_with("id"), match) %>% 
-      distinct() %>% 
+      df_thresholds %>% 
+      sample_n(nrow(.)) %>% 
+      arrange(desc(thresh_criteria)) %>% 
+      # top_n(4*nrow(df_matches_unexact), thresh_weight) %>% 
       slice(1:(4*nrow(df_matches_unexact))) %>% 
-      left_join(df_a_mod, by = "id_a") %>%
-      left_join(df_b_mod, by = "id_b", suffix = c("_a", "_b")) %>%
-      mutate(pair_id = 986398  + row_number())) 
+      select(contains(("id"))) %>% 
+      mutate(match = "unmatch") %>% 
+      attach_dbs_to_ids_dfs(df_a_mod, df_b_mod))
   
   df_unmatches_unexact %>% 
     write_rds_mod("df_unmatches_unexact")
   
   message("Pairs")
-  set.seed(1)
+  # set.seed(1)
   df_pairs <- 
     df_unmatches_unexact %>%
     bind_rows(df_matches_unexact) %>% 
@@ -703,8 +671,135 @@ generate_pairs <- function(df_a_mod, df_b_mod, data_pref){
   df_pairs %>% 
     write_rds_mod("df_pairs")
   
-  df_pairs
+  df_pairs %>% 
+    as.data.frame()
 }
+
+
+calc_perc_id_err <- function(df_a_err, n_remaining = F, n_inc = F, e = 0.4){
+  df_error_record <- attr(df_a_err, "error_record")
+  n_err <- length(unique(df_error_record$id))
+  n <- nrow(df_a_err)
+  if(!n_inc){
+    if(n_remaining){
+      ceiling(n*e - n_err)
+    } else {
+      n_err/nrow(df_a_err)
+    }
+  } else {
+    (e*n - n_err)/(1-e)  
+  }
+}
+
+make_twins <- function(df, n_errors){
+  # df <- df_a_mod$df_secondary 
+  
+  twin_ids <-
+    df %>%
+    filter(!is.na(twin_id)) %>%
+    add_count(twin_id) %>% 
+    filter(n > 1, dob != bday_twin) %>% 
+    pull(twin_id) %>%
+    unique()
+  
+  dobs <- df[["dob"]]
+  ids <- df[["id"]]
+  if(n_errors > length(twin_ids)){
+    message("Not enough twins found.")
+    n_errors  <- length(twin_ids)
+  }
+  candidate_ids <- sample(twin_ids, n_errors)
+  twin_groups <- df$twin_id %in% candidate_ids
+  df[twin_groups, "dob"] <- df[twin_groups, "bday_twin"]
+  df[twin_groups, "twin_id"] <- NA
+  ids_changed <- ids[dobs != df[["dob"]]]
+  before <- dobs[dobs != df[["dob"]]]
+  after <- df[["dob"]][dobs != df[["dob"]]]
+  df <- update_error_record(
+    df,
+    ids_changed,
+    "dob",
+    "twin",
+    before,
+    after
+  ) 
+  
+  df
+}
+
+generate_error_mult <- function(df, df_error_dist, e_target, err_mult){
+  df <- df %>% 
+    mess_data(df_error_dist %>% 
+                mutate(amount = amount*e_target*err_mult),
+              add_counting_dups = F,
+              verbose = F) %>% 
+    pluck("df_secondary") %>% 
+    select(-file)
+  message(glue("\nmultiplier: {err_mult} - id_error_percent: {calc_perc_id_err(df)}"))
+  df
+}
+
+
+generate_error <- function(df_a, 
+                           df_b, 
+                           df_dob, 
+                           df_error_dist, 
+                           e_target,
+                           err_mult = 1, 
+                           err_mult_inc = 0.01){
+  (df_a_mod <- 
+     df_a %>% 
+     preprocess_data(df_dob) %>% 
+     prep_data()) 
+  
+  df_err_a_mod <- generate_error_mult(df_a_mod, df_error_dist, e_target, err_mult)
+  while(calc_perc_id_err(df_err_a_mod) < e_target){
+    err_mult <- err_mult + err_mult_inc
+    df_err_a_mod <- generate_error_mult(df_a_mod, df_error_dist, e_target, err_mult)
+  }
+  
+  df_error_record <- 
+    attr(df_err_a_mod, "error_record") %>% 
+    mutate(ts = row_number())
+  
+  twin_ids_realized <- 
+    df_a_mod$df_original %>% 
+    semi_join(df_error_record %>% 
+                filter(error == "twin"),
+              by = "id") %>% 
+    pull(twin_id)
+  
+  
+  df_b_mod <- 
+    df_b %>% 
+    preprocess_data(df_dob %>% 
+                      mutate(dob = 
+                               ifelse(twin_id %in% twin_ids_realized, 
+                                      bday_twin, 
+                                      dob) %>% 
+                               as_date())) %>% 
+    mutate(id_b = row_number()) %>% 
+    select(-contains("twin"))
+  
+  df_a_mod <- 
+    df_err_a_mod %>% 
+    mutate(id_a = row_number()) %>% 
+    select(-contains("twin"))
+  
+  attr(df_a_mod, "error_record") <- df_error_record
+  
+  list(
+    df_a_mod = df_a_mod,
+    df_b_mod = df_b_mod,
+    df_error_record = df_error_record,
+    err_mult = err_mult,
+    percent_error_ids = calc_perc_id_err(df_a_mod),
+    percent_errors = nrow(df_error_record)/(nrow(df_a_mod)*3)
+  )
+}
+
+
+
 
 
 
@@ -755,7 +850,7 @@ evaluate_model <- function(model, df_test, ...){
 
 predict_model <- function(model, df_test){
   df_preds <- 
-    predict(model, df_test, type = "prob") %>% 
+    predict(model, df_test, type = "prob", na.action = na.pass) %>% 
     as.tibble()
   
   names_preds <- names(df_preds)
@@ -1020,3 +1115,7 @@ plot_roc_all <- function(df_evaluated, model_col = model, results_col = results)
 
 
 
+filter_na_rows <- function(df){
+  df %>% 
+    filter_all(any_vars(is.na(.)))
+}
