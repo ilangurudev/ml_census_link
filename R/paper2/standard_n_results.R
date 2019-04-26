@@ -26,9 +26,7 @@ df_model_collection <-
   select(error_percent, train_n) %>% 
   filter(train_n <= 10000) %>%
   arrange(train_n) %>% 
-  # filter(train_n == 10000, error_percent == 0) %>% 
   crossing(model = c("rf", "svm", "nn")) %>% 
-  slice(2) %>% 
   mutate(
     model_path = glue("{path_models}/e-{error_percent}_n-{train_n}_{model}.{ifelse(model == 'nn', 'h5', 'rds')}"),
     pred_probs = pmap(list(model_path = model_path,
@@ -36,15 +34,9 @@ df_model_collection <-
                            n = train_n), 
                       function(model_path, e, n){
                         message(model_path)
-                        # df_ts_ls <- 
-                        #   df_test_collection %>% 
-                        #   filter(error_percent %>% near(e)) %>% 
-                        #   slice(1) %>% 
-                        #   pull(df_test) %>% 
-                        #   pluck(1)
+               
                         
                         if(str_detect(model_path, "nn")){
-                          
                           df_tr <- 
                             df_messed_collection %>% 
                             filter(error_percent %>% near(e),
@@ -57,7 +49,7 @@ df_model_collection <-
                           results <- 
                             df_test_collection %>%
                             mutate(pred_prob_ls = 
-                                     map(function(df_e){
+                                     df_test %>% map(function(df_e){
                                        df_e %>% map(~predict_nn_2(model, .x, df_tr))
                                      }))
 
@@ -125,6 +117,14 @@ df_model_collection <-
 #                    .[[1]]
 #                  calculate_metrics(df_ts, pred_probs)
 #                })
+
+
+# df_ts_ls <- 
+#   df_test_collection %>% 
+#   filter(error_percent %>% near(e)) %>% 
+#   slice(1) %>% 
+#   pull(df_test) %>% 
+#   pluck(1)
 
 df_model_collection %>% 
   write_rds("data/paper2/df_model_collection.rds")
