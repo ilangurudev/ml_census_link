@@ -1,0 +1,209 @@
+---
+title: "Results"
+# subtitle: "with xaringan"
+author: "Gurudev Ilangovan"
+date: "2019/03/05"
+output:
+  xaringan::moon_reader:
+  lib_dir: libs
+nature:
+  highlightStyle: github
+# countIncrementalSlides: false
+---
+
+```{r, setup, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, cache = FALSE, echo = FALSE)
+source("R/paper2/utils.R")
+theme_set(theme_light())
+```
+
+# Key variables
+
+--
+
+1. Error rate (0 to 60% in increments of 5%)
+
+--
+
+2. Number of training samples (50% to 90% increments of 10%)
+
+--
+
+3. Model types (Neural Nets, Random Forests, Radial basis SVM and Linear SVM)
+
+---
+
+# Key performance measures
+
+--
+
+1. F1 score (Can further drill down to Precision and Recall) 
+
+--
+
+2. Percent assigned to manual review (at 100% and 98% NPV & PPV)
+
+
+```{r include=FALSE}
+df_model_metrics <-
+  read_rds("data/paper2/df_model_metrics.rds")
+df_model_metrics <- 
+  df_model_metrics %>% 
+  filter(model != "svm_linear") %>% 
+  spread(metric, value) %>% 
+  mutate(error_rate = error_rate %>% as.character() %>% as.numeric(),
+         train_sample = train_sample %>% as.character() %>% as.numeric(),
+         model = model %>% factor(levels = c("svm_radial", "nn", "rf")))
+```
+
+
+---
+
+
+# Error rate vs model performance (at 2000 samples)
+
+
+```{r out.width='95%'}
+p <- 
+  df_model_metrics %>% 
+  filter(train_sample == 2000) %>% 
+  ggplot(aes(error_rate, f1, fill = model, text = f1)) +
+  geom_col(position = "dodge") +
+  # facet_wrap(model ~ .) +
+  scale_fill_tableau() +
+  theme(panel.grid.major.x = element_blank()) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip()
+
+ggplotly(p)
+```
+
+
+---
+
+
+# Review percent with 100% PPV/NPV (at 2000 samples)
+
+
+```{r out.width='95%'}
+p <- 
+  df_model_metrics %>% 
+  filter(train_sample == 2000) %>% 
+  ggplot(aes(error_rate, review_pct_100, fill = model, text = review_pct_100)) +
+  geom_col(position = "dodge") +
+  # facet_wrap(model ~ .) +
+  scale_fill_tableau() +
+  theme(panel.grid.major.x = element_blank()) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip()
+
+ggplotly(p)
+```
+
+---
+
+
+# Review percent with 98% PPV/NPV (at 2000 samples)
+
+
+```{r out.width='95%'}
+p <- 
+  df_model_metrics %>% 
+  filter(train_sample == 2000) %>% 
+  ggplot(aes(error_rate, review_pct_98, fill = model, text = review_pct_98)) +
+  geom_col(position = "dodge") +
+  # facet_wrap(model ~ .) +
+  scale_fill_tableau() +
+  theme(panel.grid.major.x = element_blank()) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  coord_flip()
+
+ggplotly(p)
+```
+
+
+---
+
+
+# Effect of training set size on review percent with 100% NPV/PPV
+
+```{r out.width='95%'}
+p <- 
+  df_model_metrics %>% 
+  filter(train_sample != 2000,
+         error_rate %in% seq(0, 0.6, 0.2)) %>% 
+  ggplot(aes(train_sample, review_pct_100, fill = model, text = review_pct_100)) +
+  geom_col(position = "dodge") +
+  facet_grid(fct_rev(as.character(error_rate)) ~ .) +
+  scale_fill_tableau() +
+  theme(panel.grid.major.x = element_blank()) +
+  scale_x_continuous(breaks = c(.5, .7, .9), labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip()
+
+ggplotly(p)
+```
+
+
+---
+
+
+# Effect of training set size on review percent with 98% NPV/PPV
+
+```{r out.width='95%'}
+p <- 
+  df_model_metrics %>% 
+  filter(train_sample != 2000,
+         error_rate %in% seq(0, 0.6, 0.2)) %>% 
+  ggplot(aes(train_sample, review_pct_98, fill = model, text = review_pct_98)) +
+  geom_col(position = "dodge") +
+  facet_grid(fct_rev(as.character(error_rate)) ~ .) +
+  scale_fill_tableau() +
+  theme(panel.grid.major.x = element_blank()) +
+  scale_x_continuous(breaks = c(.5, .7, .9), labels = scales::percent) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  coord_flip()
+
+ggplotly(p)
+```
+
+
+---
+
+
+# Important features
+
+```{r}
+df_features <- 
+  df_messed_collection %>% 
+  filter(model == "rf") %>% 
+  select(error_rate, train_sample, model_obj) %>% 
+  mutate(feature_imp = map(model_obj, function(x){
+    # browser()
+    x$finalModel$importance %>% 
+      as_tibble() %>% 
+      mutate(feature = rownames(x$finalModel$importance))
+  })) %>% 
+  select(-model_obj) %>% 
+  unnest() %>% 
+  group_by(error_rate, train_sample) %>% 
+  arrange(desc(MeanDecreaseGini)) %>% 
+  mutate(rank = row_number()) %>% 
+  filter(rank<5) %>% 
+  ungroup()
+
+
+
+df_features %>% 
+  count(feature, sort = T)
+
+df_features %>% 
+  group_by(feature) %>% 
+  summarise(rank = mean(rank)) %>% 
+  arrange(rank) %>% 
+  print()
+```
+

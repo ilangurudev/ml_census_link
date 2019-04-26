@@ -6,7 +6,7 @@ if(!"pacman" %in% installed.packages()){
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, lubridate,
                rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
                PGRdup, doParallel, pushoverr, rlErrorGeneratoR, pROC,
-               scico, RColorBrewer, ggthemes, LaCroixColoR, plotly)
+               scico, RColorBrewer, ggthemes, LaCroixColoR, plotly, keras)
 
 # source("data/ credentials.R")
 
@@ -52,7 +52,7 @@ extract_major_token <- function(x){
 # }
 
 preprocess_data <- function(df,df_dob){
-  
+  # browser()
   df  %>% 
     select(starts_with("id"), 
            fname = first_name, lname = last_name, 
@@ -62,7 +62,7 @@ preprocess_data <- function(df,df_dob){
     mutate(birth_age = birth_age %>% as.integer(),
            name_suffix = if_else(is.na(name_suffix), "", name_suffix),
            birth_year = year(dob)
-           ) %>% 
+    ) %>% 
     mutate_if(is.character, str_to_lower) %>% 
     add_count_name(fname, "ffreq", T) %>%
     add_count_name(lname, "lfreq", T)  %>% 
@@ -187,7 +187,7 @@ summarise_all_string_metrics <- function(x, y, col_name){
 
 add_feature_vector <- function(df, df_a_mod, df_b_mod){
   # browser()
-
+  
   df %>%
     select(-contains("freq")) %>% 
     left_join(df_a_mod %>% 
@@ -311,39 +311,7 @@ add_feature_vector <- function(df, df_a_mod, df_b_mod){
 
 
 
-# blocking ----------------------------------------------------------------
-
-prepare_blocking <- function(df){
-  df %>% 
-    mutate(blocking_fname_soundex = phonics::soundex(fname),
-           blocking_bplstr_yr_gender_code_race_code = str_c(bplstr, birth_year, gender_code, race_code))
-}
-
-multipass_blocking <- function(df1, df2){
-  # browser()
-  blocking_fields <- colnames(df1) %>% str_subset(START %R% "blocking_")
-  map_dfr(blocking_fields, function(x){
-    df1 %>% 
-      full_join(df2, 
-                by = x,
-                suffix = c("_a", "_b"))
-  }) %>% 
-    distinct() %>% 
-    select(-starts_with("blocking")) %>% 
-    filter(!is.na(fname_b) & !is.na(lname_b) & !is.na(fname_a) & !is.na(lname_a) &
-             fname_b != "" & lname_b != "" & fname_a != "" & lname_a != "")
-}
-
-
 # helpers -----------------------------------------------------------------
-
-household_potential_match <- function(household_id, df_a, df_b){
-  inner_join(x = df_a %>% mutate(cmn = 1),
-             y = df_b %>% mutate(cmn = 1),
-             by = c("cmn"),
-             suffix = c("_a", "_b")) %>% 
-    select(-cmn)
-}
 
 sample_ns <- function(..., seed = 1){
   set.seed(seed)
@@ -831,12 +799,12 @@ calculate_hamming_fields <- function(df, weight_vector){
            md_equal = 
              glue("{month(dob_a)}-{day(dob_a)}") == 
              glue("{month(dob_b)}-{day(dob_b)}")
-           ) %>% 
+    ) %>% 
     select(contains("equal")) %>% 
     gather(col, equal) %>% 
     arrange(col) %>% 
     mutate(equal = equal %>% as.integer())
-    
+  
   sum(df_equality$equal * weight_vector)
 }
 
@@ -864,95 +832,184 @@ predict_model <- function(model, df_test){
   
 }
 
-calculate_metrics <- function(df_preds, df_test, 
-                              metric = precision,
-                              k_range = seq(0.5, 1, .001),
-                              value = 0.99,
-                              lowest = T,
-                              plot_roc = T){
-  df_preds_aug <- 
-    df_preds %>% 
-    mutate(pair_id = df_test$pair_id,
-           conf = abs(match_prob - 0.5)*2,
-           match_pred = ifelse(match_prob >= 0.5, "match", "unmatch") %>% 
-             factor(levels = c("match", "unmatch"))) %>% 
-    left_join(df_test, by = "pair_id") %>%
-    arrange(conf, pair_id) %>% 
-    select(pair_id, 
-           fname_a, fname_b, lname_a, lname_b, birth_year_a, birth_year_b, 
-           gender_code_a, gender_code_b, race_code_a, race_code_b,
-           match_pred, match, conf, match_prob, everything())
+predict_nn <- function(model_name, df_ts, df_tr){
   
+  model <- load_model_hdf5(model_name)
+
+  df_tr <-
+    df_tr %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)  
   
-  df_preds_aug_pairs <- 
-    df_preds_aug %>% 
-    vectors_to_pairs()%>% 
-    select(pair_id, 
-           fname, lname, gender_code, race_code, birth_year,
-           match_prob, conf, match_pred, match, everything())
+  tr_means <- map_dbl(df_tr, ~mean(.x, na.rm = T))
+  tr_sds <- map_dbl(df_tr, ~sd(.x, na.rm = T))
   
-  results <- list()
-  confidence <- list()
+  df_ts <-
+    df_ts %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)
   
-  confidence$most_confident_mistakes <- 
-    df_preds_aug_pairs %>% 
-    filter(match != match_pred) %>% 
-    arrange(desc(conf))
+  df_ts <- 
+    pmap_df(list(a = df_ts, b = tr_means, c = tr_sds), function(a, b, c){
+      (a -b)/c
+    }) %>% 
+    mutate_all(fill_na_0) %>% 
+    mutate(match = ifelse(match == min(match), 0, 1))
   
-  confidence$least_confident_mistakes <- 
-    df_preds_aug_pairs %>% 
-    filter(match != match_pred) %>% 
-    arrange(conf)
+  ts_x <- 
+    df_ts %>% 
+    select(-match) %>% 
+    as.matrix()
   
-  confidence$most_confident_right <- 
-    df_preds_aug_pairs %>% 
-    filter(match == match_pred) %>% 
-    arrange(desc(conf))
+  ts_y <- 
+    df_ts$match
   
-  confidence$least_confident_right <- 
-    df_preds_aug_pairs %>% 
-    filter(match == match_pred) %>% 
-    arrange(conf)
+  model$predict(ts_x)[,1]
+}
+
+
+predict_nn_2 <- function(model, df_ts, df_tr){
   
-  confidence$most_confident_decisions <- 
-    df_preds_aug_pairs %>% 
-    arrange(desc(conf))
+  df_tr <-
+    df_tr %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)  
   
-  confidence$least_confident_decisions <- 
-    df_preds_aug_pairs %>% 
-    arrange(conf)
+  tr_means <- map_dbl(df_tr, ~mean(.x, na.rm = T))
+  tr_sds <- map_dbl(df_tr, ~sd(.x, na.rm = T))
   
-  results$confidence <- confidence
-  results$data <- list(
-    df_preds = df_preds,
-    df_preds_aug = df_preds_aug,
-    df_preds_aug_pairs = df_preds_aug_pairs
+  df_ts <-
+    df_ts %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)
+  
+  df_ts <- 
+    pmap_df(list(a = df_ts, b = tr_means, c = tr_sds), function(a, b, c){
+      (a -b)/c
+    }) %>% 
+    mutate_all(fill_na_0) %>% 
+    mutate(match = ifelse(match == min(match), 0, 1))
+  
+  ts_x <- 
+    df_ts %>% 
+    select(-match) %>% 
+    as.matrix()
+  
+  ts_y <- 
+    df_ts$match
+  
+  model$predict(ts_x)[,1]
+}
+
+
+
+
+build_model <- function(inp_len) {
+  
+  model <- 
+    keras_model_sequential() %>%
+    layer_dense(units = 64, activation = "relu",
+                input_shape = inp_len) %>%
+    # kernel_regularizer = regularizer_l2(0.0001)
+    layer_batch_normalization() %>% 
+    layer_dropout(rate = 0.001) %>%
+    layer_dense(units = 64, 
+                activation = "relu") %>%
+    layer_batch_normalization() %>% 
+    layer_dense(units = 1, activation = "sigmoid")
+  
+  model %>% compile(
+    loss = "binary_crossentropy",
+    optimizer = optimizer_rmsprop(),
+    metrics = list("accuracy")
   )
   
+  model
+}
+
+fill_na_0 <- function(x, repl = 0){
+  x[is.na(x)] <- repl
+  x
+}
+
+build_nn <- function(df_tr, err, tr_sz, epochs=50){
+  message(glue("{err}-{tr_sz}"))
+  
+  df_tr <-
+    df_tr %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)  
+  
+  tr_means <- map_dbl(df_tr, ~mean(.x, na.rm = T))
+  tr_sds <- map_dbl(df_tr, ~sd(.x, na.rm = T))
+  
+  df_tr <- 
+    pmap_df(list(a = df_tr, b = tr_means, c = tr_sds), function(a, b, c){
+      (a -b)/c
+    }) %>% 
+    mutate_all(fill_na_0) %>% 
+    mutate(match = ifelse(match == min(match), 0, 1))
+  
+  tr_x <- 
+    df_tr %>% 
+    select(-match) %>% 
+    as.matrix()
+  
+  tr_y <- 
+    df_tr$match
+  
+  model <- build_model(inp_len = 23)
+  model_name <- glue("./data/paper2/best_nn-{err}-{tr_sz}.h5")
+  
+  history <- 
+    model %>% 
+    fit(
+      tr_x,
+      tr_y,
+      epochs = epochs,
+      validation_split = 0.2,
+      verbose = 1,
+      callbacks = list(
+        callback_model_checkpoint(model_name,
+                                  verbose = T,
+                                  save_best_only = T,
+                                  monitor = "val_acc"),
+        callback_reduce_lr_on_plateau(patience=10, 
+                                      verbose = T,
+                                      factor = 0.8)
+      )
+    )
+  
+  model_name
+}
+
+calculate_metrics <- function(df_test, pred_prob){
+  message(nrow(df_test))
+  match <- ifelse(as.character(df_test$match) == "match", 1, 0) 
+  calculate_metrics_prob(match, pred_prob)
+}
+
+
+
+calculate_metrics_prob <- function(match, pred_prob){
+  match_pred <- ifelse(pred_prob >= 0.5, 1, 0)
   metrics <- list()
   
-  match <- ifelse(as.character(df_preds_aug$match) == "match", 1, 0) 
-  match_pred <- ifelse(as.character(df_preds_aug$match_pred) == "match", 1, 0)
-  pred_prob <- df_preds_aug$match_prob
-  
-  threshold_precision_k <- 
-    calc_threshold_for_metric_value(df_preds_aug$match,
-                                    pred_prob,
-                                    metric = metric,
-                                    value = value,
-                                    k_range = k_range,
-                                    lowest = lowest)
-  match_pred_k <- 
-    as.integer(df_preds_aug$match_prob >= threshold_precision_k)
-  
-  metrics$precision_k <- precision(match, match_pred_k)
-  metrics$recall_k <- recall(match, match_pred_k)
-  metrics$specificity_k <- specificity(match, match_pred_k)
-  metrics$accuracy_k <- Accuracy(match, match_pred_k)
-  metrics$f1_k <- f1Score(match, match_pred_k)
-  
+  metrics$review_pct_100 <- calc_review_pct(match, pred_prob)
+  metrics$review_pct_98 <- calc_review_pct(match, pred_prob, 0.98, 0.98)
+  metrics$review_pct_99 <- calc_review_pct(match, pred_prob, 0.99, 0.99)
   metrics$accuracy <- Accuracy(match, match_pred)
-  metrics$auc <- auc(roc(match, match_pred))
+  metrics$auc <- MLmetrics::AUC(match_pred, match)
   metrics$precision <- precision(match, match_pred)
   metrics$sensitivity <- recall(match, match_pred)
   metrics$specificity <- specificity(match, match_pred)
@@ -964,45 +1021,55 @@ calculate_metrics <- function(df_preds, df_test,
   metrics$recall <- recall(match, match_pred)
   metrics$auc <- auc(match, pred_prob)
   metrics$gini <- Gini(match, pred_prob)
-  metrics$n_wrong <- nrow(results$confidence$most_confident_mistakes)/2
   
-  metrics$df_metric_table <-
-    metrics %>% 
+  # metrics$df_metric_table <-
+  metrics %>% 
     enframe() %>% 
     rename(metric = name) %>% 
     mutate(value = map_dbl(value, 1)) 
-  # %>% 
-  # spread(name, value)
   
-  thresholds <- seq(0, 1.05, 0.05)
-  metrics$df_roc <- 
-    tibble(
-      thresholds = thresholds,
-      sensitivity = map_dbl(thresholds, ~recall(match, (pred_prob >= .x) %>% as.integer())),
-      specificity = map_dbl(thresholds, ~specificity(match, (pred_prob >= .x) %>% as.integer()))
-    ) %>% 
-    mutate(fpr = 1-specificity)
   
-  metrics$roc_curve <- 
-    ggplot(metrics$df_roc, aes(fpr, sensitivity))+
-    geom_line(size = 1, alpha = 0.7) +
-    scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .2)) +
-    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, .2)) +
-    labs(title= "ROC curve", 
-         x = "False Positive Rate (1-Specificity)", 
-         y = "True Positive Rate (Sensitivity)")
+  # metrics$confusion_matrix <- ConfusionMatrix(match, match_pred)
+  # metrics$f_scores <- structure(FBeta_Score(match, match_pred, positive = 1, beta = 1:10), names = 1:10) 
   
-  if(plot_roc) plot(metrics$roc_curve)
+  # metrics
   
-  metrics$confusion_matrix <- ConfusionMatrix(match, match_pred)
-  metrics$f_scores <- structure(FBeta_Score(match, match_pred, positive = 1, beta = 1:10), names = 1:10) 
-  
-  results$metrics <- metrics
-  
-  class(results) <- "rl_results"
-  
-  results
 }
+
+
+calc_review_pct <- function(match, match_prob, ppv = 1, npv = 1){
+  # browser()
+  match <- as.integer(match)
+  match_prob_order <- order(match_prob)
+  match_prob <- match_prob[match_prob_order]
+  match <- match[match_prob_order]
+  pos_probs <- match_prob[match_prob > 0.5]
+  neg_probs <- rev(match_prob[match_prob <= 0.5])
+  
+  ## neg reviews
+  for(t1 in neg_probs){
+    negs <- (match_prob <= t1)
+    # probs <- match_prob[negs]
+    actuals <- match[negs]
+    # probs[probs<=t1] = 0
+    if(mean(actuals == 0) >= npv){
+      break
+    }
+  }
+  
+  for(t2 in pos_probs){
+    pos <- (match_prob >=t2)
+    # probs <- match_prob[negs]
+    actuals <- match[pos]
+    # probs[probs<=t1] = 0
+    if(mean(actuals == 0) >= ppv){
+      break
+    }
+  }
+  
+  mean((match_prob > t1) & (match_prob < t2))
+}
+
 
 explain_metrics <- function() rstudioapi::viewer("https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)") 
 
@@ -1119,3 +1186,251 @@ filter_na_rows <- function(df){
   df %>% 
     filter_all(any_vars(is.na(.)))
 }
+
+
+
+# county funcs ----------------------------------------------------------
+
+
+gen_birthday_from_age_scr <- function(as_of, age = 25){
+  # print(as_of)
+  date_from <- as_of + 1 - years(age + 1)
+  date_to <- as_of - years(age)
+  date_range <- seq(date_from, date_to, by = 1) 
+  # print(glue("{date_range[1]} - {date_range[length(date_range)]}"))
+  date_range %>% sample(1)
+}
+
+
+get_bdays <- function(df_a, df_b){
+  df_a_t <- 
+    df_a %>% 
+    select(voter_reg_num, first_name, mname, last_name, birth_age, gender_code, race_code, res_street_address)
+  
+  df_b_t <- 
+    df_b %>% 
+    select(voter_reg_num, first_name, mname, last_name, birth_age, gender_code, race_code, res_street_address)
+  
+  df_a_minus_b_t <- 
+    df_a_t %>% 
+    anti_join(df_b_t, by = "voter_reg_num") %>% 
+    mutate(as_of_month = 4,
+           as_of_year = 2013,
+           as_of_day = 30)
+  
+  df_a_int_b_t <- 
+    df_a_t %>% 
+    semi_join(df_b_t, by = "voter_reg_num") %>% 
+    mutate(as_of_month = 4,
+           as_of_year = 2013,
+           as_of_day = 30)
+  
+  df_b_minus_a_t <- 
+    df_b_t %>% 
+    anti_join(df_a_t, by = "voter_reg_num") %>% 
+    mutate(as_of_month = 3,
+           as_of_year = 2017,
+           as_of_day = 31)
+  
+  
+  
+  (df_t <- 
+      bind_rows(
+        df_a_minus_b_t, 
+        df_a_int_b_t, 
+        df_b_minus_a_t
+      ) %>% 
+      # slice(1:5) %>% 
+      mutate(as_of = ymd(glue("{as_of_year}-{as_of_month}-{as_of_day}")),
+             bday = 
+               map2_dbl(as_of, birth_age, gen_birthday_from_age_scr) %>% as_date()))
+  
+  df_t %>% 
+    select(voter_reg_num, bday) 
+  
+  df_t %>% 
+    group_by(last_name, res_street_address, birth_age) %>% 
+    left_join(
+      df_t %>% 
+        group_by(last_name, res_street_address, birth_age) %>% 
+        filter(n() > 1, res_street_address != "REMOVED") %>% 
+        select(last_name, res_street_address, birth_age, bday) %>% 
+        sample_n(1) %>% 
+        rename(bday_twin = bday) %>% 
+        ungroup() %>% 
+        mutate(twin_id = row_number())
+    ) %>% 
+    ungroup() %>% 
+    select(voter_reg_num, contains("bday"), twin_id) %>% 
+    rename(dob = bday)
+  
+}
+
+
+
+
+generate_pairs_for_county <- function(county, 
+                                      error_pcts = seq(0, 0.6, 0.05)){
+  df_a <- 
+    read_delim(glue("data/ncvote/apr13/ncvoter{county}.txt"), delim = "\t") %>% 
+    rename(name_suffix = name_sufx_cd,
+           mname = midl_name) %>% 
+    mutate_if(is.character, str_squish)
+  
+  
+  df_b <- 
+    read_delim(glue("data/ncvote/mar17/ncvoter{county}.txt"), delim = "\t") %>% 
+    rename(name_suffix = name_suffix_lbl,
+           mname = middle_name) %>% 
+    mutate_if(is.character, str_squish)
+  
+  df_dob <- get_bdays(df_a, df_b)
+  
+  # browser()
+  set.seed(37)
+  df_messed_collection <- 
+    tibble(error_percent = error_pcts) %>% 
+    print() %>% 
+    mutate(
+      ls_egen = map(error_percent, function(e){
+        message(glue("\n\nerror percent target: {e}"))
+        generate_error(df_a, 
+                       df_b, 
+                       df_dob, 
+                       df_error_dist, 
+                       e, 
+                       err_mult = 1,
+                       err_mult_inc = 0.01)
+      })
+    ) %>% 
+    print() %>% 
+    mutate(df_a_mod = map(ls_egen, "df_a_mod"),
+           df_b_mod = map(ls_egen, "df_b_mod"),
+           df_error_record = map(ls_egen, "df_error_record"),
+           err_mult = map_dbl(ls_egen, "err_mult"),
+           percent_error_ids = map_dbl(ls_egen, "percent_error_ids"),
+           percent_errors = map_dbl(ls_egen, "percent_errors")) %>% 
+    print() %>% 
+    mutate(
+      df_pairs = pmap(list(a = df_a_mod, 
+                           b = df_b_mod, 
+                           e = error_percent), function(a, b, e){
+                             generate_pairs(a, b, data_pref = glue("percent_{e*100}"))
+                           }),
+      size = map_int(df_pairs, nrow)) %>% 
+    print()
+  
+  df_messed_collection <-
+    df_messed_collection %>% 
+    # slice(13) %>% 
+    mutate(df_feature = pmap(list(df_pair = df_pairs, 
+                                  df_a = df_a_mod,
+                                  df_b = df_b_mod), 
+                             function(df_pair, df_a, df_b){
+                               # browser()
+                               message(glue("calculating feature vector for {nrow(df_pair)} records"))
+                               st <- Sys.time()
+                               df_res <- 
+                                 df_pair %>%
+                                 # sample_n(500) %>%
+                                 add_feature_vector(df_a, df_b) %>%
+                                 select(starts_with("metric"), match) %>%
+                                 mutate(match = match %>% factor(levels = c("unmatch", "match"))) %>%
+                                 as.data.frame()
+                               message(glue("{difftime(Sys.time(), st, units = 'mins')} minutes elapsed"))
+                               df_res
+                             }))
+  
+  df_messed_collection <- 
+    df_messed_collection %>% 
+    mutate(size = df_feature %>% map_int(~(nrow(.))))
+  
+  df_messed_collection  
+  
+}
+
+
+
+#### Neural Net -----------------
+
+build_model <- function(inp_len) {
+  
+  model <- 
+    keras_model_sequential() %>%
+    layer_dense(units = 64, activation = "relu",
+                input_shape = inp_len) %>%
+    # kernel_regularizer = regularizer_l2(0.0001)
+    layer_batch_normalization() %>% 
+    layer_dropout(rate = 0.001) %>%
+    layer_dense(units = 64, 
+                activation = "relu") %>%
+    layer_batch_normalization() %>% 
+    layer_dense(units = 1, activation = "sigmoid")
+  
+  model %>% compile(
+    loss = "binary_crossentropy",
+    optimizer = optimizer_rmsprop(),
+    metrics = list("accuracy")
+  )
+  
+  model
+}
+
+fill_na_0 <- function(x, repl = 0){
+  x[is.na(x)] <- repl
+  x
+}
+
+build_nn <- function(df_tr, path_nn, epochs=50){
+  
+  df_tr <-
+    df_tr %>% 
+    select(contains("metric"), match) %>% 
+    mutate_if(is.logical, as.integer) %>% 
+    mutate_if(is.factor, as.integer) %>% 
+    mutate_if(is.integer, as.double)  
+  
+  tr_means <- map_dbl(df_tr, ~mean(.x, na.rm = T))
+  tr_sds <- map_dbl(df_tr, ~sd(.x, na.rm = T))
+  
+  df_tr <- 
+    pmap_df(list(a = df_tr, b = tr_means, c = tr_sds), function(a, b, c){
+      (a -b)/c
+    }) %>% 
+    mutate_all(fill_na_0) %>% 
+    mutate(match = ifelse(match == min(match), 0, 1))
+  
+  tr_x <- 
+    df_tr %>% 
+    select(-match) %>% 
+    as.matrix()
+  
+  tr_y <- 
+    df_tr$match
+  
+  model <- build_model(inp_len = 23)
+  
+  history <- 
+    model %>% 
+    fit(
+      tr_x,
+      tr_y,
+      epochs = epochs,
+      validation_split = 0.2,
+      verbose = 1,
+      callbacks = list(
+        callback_model_checkpoint(path_nn,
+                                  verbose = T,
+                                  save_best_only = T,
+                                  monitor = "val_acc"),
+        callback_reduce_lr_on_plateau(patience=10, 
+                                      verbose = T,
+                                      factor = 0.8)
+      )
+    )
+}
+
+
+
+
+
