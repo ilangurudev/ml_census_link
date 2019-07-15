@@ -40,6 +40,21 @@ for(i in try_counties){
 }
 
 
+fs::dir_info("data/ncvote/apr13/") %>% 
+  arrange(size) %>% 
+  mutate(county = str_extract(path, "ncvoter\\d+") %>% str_extract("\\d+") %>% as.integer()) %>% 
+  filter(county %in% c(21,3,38,48,6,69,87,93,99)) %>% 
+  mutate(county_name = map_chr(path, function(x){
+    read_delim(x, delim = "\t") %>% 
+      pull(county_desc) %>% 
+      .[1]
+  })) %>% 
+  pull(county_name) %>% 
+  str_to_title() %>% 
+  str_c(collapse = ", ")
+
+
+
 df_errors <- 
   dir_ls("data/paper2/counties/") %>% 
   str_subset("rds") %>% 
@@ -84,6 +99,7 @@ df_messed_collection <-
 
 df_messed_collection %>% write_rds("data/paper2/df_messed_collection.rds")
 
+df_messed_collection <- read_rds("data/paper2/df_messed_collection.rds")
 
 summary_func <- function(data, lev = NULL, model = NULL) {
   pred <- data$match
@@ -107,7 +123,7 @@ train_control <-
 path_model_data <- "data/paper2/models"
 set.seed(13)
 df_messed_collection %>% 
-  filter((error_percent >= 0.1 & train_n == 10000) | train_n > 10000) %>% 
+  filter((error_percent == 0.05 & train_n == 10000)) %>% 
   arrange(train_n, error_percent) %>%
   mutate(
     models = 

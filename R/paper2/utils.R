@@ -6,7 +6,8 @@ if(!"pacman" %in% installed.packages()){
 pacman::p_load(tidyverse, stringdist, phonics, glue, caret, lubridate,
                rebus, fs, ModelMetrics, MLmetrics, caretEnsemble,
                PGRdup, doParallel, pushoverr, rlErrorGeneratoR, pROC,
-               scico, RColorBrewer, ggthemes, LaCroixColoR, plotly, keras)
+               scico, RColorBrewer, ggthemes, LaCroixColoR, plotly, keras,
+               janitor)
 
 # source("data/ credentials.R")
 
@@ -1005,9 +1006,18 @@ calculate_metrics_prob <- function(match, pred_prob){
   match_pred <- ifelse(pred_prob >= 0.5, 1, 0)
   metrics <- list()
   
-  metrics$review_pct_100 <- calc_review_pct(match, pred_prob)
-  metrics$review_pct_98 <- calc_review_pct(match, pred_prob, 0.98, 0.98)
+  metrics$review_pct_100 <- calc_review_pct(match, pred_prob, 1.00, 1.00)
   metrics$review_pct_99 <- calc_review_pct(match, pred_prob, 0.99, 0.99)
+  metrics$review_pct_98 <- calc_review_pct(match, pred_prob, 0.98, 0.98)
+  metrics$review_pct_97 <- calc_review_pct(match, pred_prob, 0.97, 0.97)
+  metrics$review_pct_96 <- calc_review_pct(match, pred_prob, 0.96, 0.96)
+  metrics$review_pct_95 <- calc_review_pct(match, pred_prob, 0.95, 0.95)
+  metrics$review_pct_94 <- calc_review_pct(match, pred_prob, 0.94, 0.94)
+  metrics$review_pct_93 <- calc_review_pct(match, pred_prob, 0.93, 0.93)
+  metrics$review_pct_92 <- calc_review_pct(match, pred_prob, 0.92, 0.92)
+  metrics$review_pct_91 <- calc_review_pct(match, pred_prob, 0.91, 0.91)
+  metrics$review_pct_90 <- calc_review_pct(match, pred_prob, 0.90, 0.90)
+  
   metrics$accuracy <- Accuracy(match, match_pred)
   metrics$auc <- MLmetrics::AUC(match_pred, match)
   metrics$precision <- precision(match, match_pred)

@@ -69,65 +69,140 @@ df_model_collection <-
                       })
     )
 
-
-# df_tr <- 
-#   df_messed_collection %>% 
-#   filter(error_percent %>% near(0.35),
-#          train_n == 7000) %>% 
-#   slice(1) %>% 
-#   pull(df_train) %>% 
-#   pluck(1)
-# 
-# df_ts_ls <- 
-#   df_test_collection %>% 
-#   filter(error_percent  %>%  between(0.34, 0.36)) %>%  
-#   pull(df_test) %>% 
-#   pluck(1)
-# 
-# 
-# df_ts_ls %>% map(~predict_nn(glue("{path_models}/e-0.35_n-{7000}_nn.h5"), 
-#                              .x, 
-#                              df_tr))
-# 
-# model <- glue("{path_models}/e-0.35_n-{7000}_rf.rds") %>% read_rds()
-# preds <- 
-#   df_ts_ls %>% map(~predict(model, 
-#                          .x, 
-#                          type = "prob", 
-#                          na.action = na.pass)$match)
-# 
-# metrics <- map2(df_ts_ls, preds, calculate_metrics)
-# 
-# metrics %>% 
-#   bind_rows() %>% 
-#   group_by(metric) %>% 
-#   summarise(mean_value = mean(value), value = sd(value))
-
-# ,
-# metrics = pmap(list(e = error_percent,
-#                     n = train_n,
-#                     pred_probs = pred_probs), 
-#                function(e, n, pred_probs){
-#                  
-#                  df_ts <- 
-#                    df_messed_collection %>% 
-#                    filter(error_percent == e,
-#                           train_n == n) %>% 
-#                    pull(df_test) %>% 
-#                    .[[1]]
-#                  calculate_metrics(df_ts, pred_probs)
-#                })
-
-
-# df_ts_ls <- 
-#   df_test_collection %>% 
-#   filter(error_percent %>% near(e)) %>% 
-#   slice(1) %>% 
-#   pull(df_test) %>% 
-#   pluck(1)
-
 df_model_collection %>% 
-  write_rds("data/paper2/df_model_collection.rds")
+  write_rds("data/paper2/df_model_collection_new.rds")
+
+df_model_collection <- 
+  read_rds("data/paper2/df_model_collection_new.rds")
+
+
+df_metric_list <- 
+  df_model_collection %>% 
+  mutate(metric_ls__e = map2(error_percent, pred_probs, function(e, df_probs){
+    # browser()
+    ls_ts <- 
+      df_test_collection %>% 
+      filter(error_percent %>% near(e)) %>% 
+      slice(1) %>% 
+      pull(df_test) %>% 
+      pluck(1)
+    
+    p <- 
+      df_probs %>% 
+      filter(error_percent %>% near(e)) %>% 
+      slice(1) %>% 
+      pull(pred_prob_ls) %>% 
+      pluck(1)
+    
+    map2(ls_ts, p, ~calculate_metrics(.x, .y))
+  }))
+
+
+df_metric_list %>% 
+  write_rds("data/paper2/df_metric_list.rds")
+
+df_metric_list <- 
+  read_rds("data/paper2/df_metric_list.rds")
+
+
+df_pred_true <- 
+  df_model_collection %>% 
+  mutate(pred_true_df = map2(error_percent, pred_probs, function(e, df_probs){
+    # browser()
+    ls_ts <- 
+      df_test_collection %>% 
+      filter(error_percent %>% near(e)) %>% 
+      slice(1) %>% 
+      pull(df_test) %>% 
+      pluck(1)
+    
+    p <- 
+      df_probs %>% 
+      filter(error_percent %>% near(e)) %>% 
+      slice(1) %>% 
+      pull(pred_prob_ls) %>% 
+      pluck(1)
+    
+    tibble(true = bind_rows(ls_ts)$match, pred_prob = unlist(p))
+  })) %>% 
+  select(error_percent, train_n, model, pred_true_df) %>% 
+  unnest()
+
+df_pred_true %>% 
+  filter(train_n == 1000, 
+         error_percent == 0.6) %>% 
+  ggplot(aes(pred_prob, fill = true)) +
+  geom_density() +
+  scale_y_sqrt()+
+  facet_wrap(~model, nrow = 3)
+
+df_metric_list <- 
+  df_metric_list %>% 
+  select(error_percent, train_n, model, metric_ls__e) %>% 
+  mutate(metric_ls__e = map(metric_ls__e, bind_rows)) %>% 
+  unnest()
+
+
+
+get_metrics_for_params <- function(m = "review_pct_99", e = 4000){
+   df_metric_list %>% 
+    filter(metric == m,
+           train_n == e) 
+}
+
+
+get_metrics_for_params() %>% 
+  group_by(error_percent, model) %>% 
+  summarise(value = mean(value)) %>%
+  ggplot(aes(error_percent, value, color=model)) +
+  geom_point()  +
+  geom_smooth(se=F)
+
+{p <-
+  df_metric_list %>% 
+  filter(metric %in% c("review_pct_99", "f1")) %>% 
+  group_by(error_percent, model, metric, train_n) %>% 
+  summarise_all(mean) %>% 
+  ggplot(aes(error_percent, value, color = model)) +
+  # geom_smooth(se=F, method="lm") +
+  # geom_smooth(se=F) +
+  geom_smooth() +
+  # geom_line() +
+  facet_grid(train_n~metric)
+
+ggplotly(p)}
+
+
+df_metric_list %>% 
+  filter(metric %in% c("f1"), #"review_pct_99"
+         error_percent %% .1 == 0) %>% 
+  group_by(error_percent, model, metric, train_n) %>% 
+  summarise_all(mean) %>% 
+  ggplot(aes(train_n, value, color = model)) +
+  # geom_smooth(se=F, method="lm") +
+  # geom_smooth(se=F) +
+  # geom_smooth() +
+  geom_line() +
+  facet_grid(error_percent~metric) +
+  scale_x_continuous(breaks=c(1000,4000,7000,10000))
+
+df_metric_list %>% 
+  filter(metric %in% c("review_pct_99"), 
+         error_percent %>% map_lgl(~any(near(.x, c(0,0.3,0.6))))) %>% 
+  group_by(error_percent, model, metric, train_n) %>% 
+  summarise_all(mean) %>% 
+  ggplot(aes(train_n, value, color = model)) +
+  # geom_smooth(se=F, method="lm") +
+  # geom_smooth(se=F) +
+  # geom_smooth() +
+  geom_line() +
+  facet_grid(error_percent~metric) +
+  scale_x_continuous(breaks=c(1000,4000,7000,10000))
+
+
+
+get_metrics_for_params() %>% 
+  ggplot(aes(error_percent, ))
 
 df_model_metrics <-
   df_model_collection %>%

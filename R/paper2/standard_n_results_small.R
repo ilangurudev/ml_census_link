@@ -1,5 +1,45 @@
 source("R/paper2/utils.R")
 
+df_metric_list <- 
+  read_rds("data/paper2/df_metric_list.rds")
+
+df_metric_list <- 
+  df_metric_list %>% 
+  select(error_percent, train_n, model, metric_ls__e) %>% 
+  mutate(metric_ls__e = map(metric_ls__e, bind_rows)) %>% 
+  unnest()
+
+
+
+get_metrics_for_params <- function(m = "review_pct_99", e = 4000){
+  df_metric_list %>% 
+    filter(metric == m,
+           train_n == e) 
+}
+
+
+
+df_metric_list %>% 
+  filter(metric %in% c("f1")) %>% 
+  ggplot(aes(train_n, value, color = error_percent, group = error_percent)) +
+  geom_smooth(se=F) + 
+  facet_wrap(.~model, nrow = 3)
+
+df_metric_list %>% 
+  filter(metric %in% c("review_pct_99")) %>% 
+  ggplot(aes(train_n, value, color = error_percent, group = error_percent)) +
+  geom_smooth(se=F) + 
+  facet_wrap(.~model, nrow = 3)
+
+
+###########################################################
+
+# - RF performs significantly better
+# - 
+
+###########################################################
+
+
 df_model_collection <- 
   read_rds("data/paper2/df_model_collection.rds")
 

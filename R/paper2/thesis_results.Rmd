@@ -1,0 +1,802 @@
+---
+title: "Results Thesis"
+author: "Gurudev Ilangovan"
+date: "5/1/2019"
+output: html_document
+---
+
+```{r include=FALSE}
+source("R/paper2/utils.R")
+pacman::p_load(xtable, lsmeans)
+
+df_metric_list <- 
+  read_rds("data/paper2/df_metric_list.rds")
+
+df_metric_list <- 
+  df_metric_list %>% 
+  select(error_percent, train_n, model, metric_ls__e) %>% 
+  mutate(metric_ls__e = map(metric_ls__e, bind_rows)) %>% 
+  unnest() %>% 
+  mutate(model = case_when(
+    model == "nn" ~ "Dense Neural Net",
+    model == "rf" ~ "Random Forest",
+    TRUE ~ "SVM (RBF)"
+  ) %>% factor(levels = c("Dense Neural Net", "SVM (RBF)", "Random Forest")))
+
+
+
+get_metrics_for_params <- function(m = "review_pct_99", e = 4000){
+  df_metric_list %>% 
+    filter(metric == m,
+           train_n == e) 
+}
+
+knitr::opts_chunk$set(echo = FALSE, warning = F, message = F, cache = T)
+
+
+theme_custom <- function(){
+  theme_light() +
+  theme(legend.title = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        # axis.title = element_blank(),
+        # plot.title = element_text(hjust = 0.5),
+        plot.title = element_blank(),
+        axis.text = element_text(size=15),
+        legend.text = element_text(size=15),
+        title = element_text(size=15),
+        panel.grid.major.y = element_line(colour = 'gray', size = 0.25)
+        )
+}
+
+width <- 10
+height <- 8
+```
+
+```{r}
+counties <- 
+  dir_ls("data/paper2/counties/") %>% 
+  str_subset("rds") %>% 
+  fs::path_file() %>% 
+  str_extract("\\d+") %>% 
+  as.integer() %>% 
+  c(., 100)
+
+df_apr13_counties <- 
+  counties %>% 
+  map_df(~read_delim(glue("data/ncvote/apr13/ncvoter{.x}.txt"), 
+                     delim = "\t", 
+                     col_types = cols(.default = "c"))) %>% 
+  mutate(data = "April 2013",
+         gender = case_when(
+           gender_code == "M" ~ "Male",
+           gender_code == "F" ~ "Female",
+           TRUE ~ "Undesginated"
+         ),
+         race = case_when(
+           race_code == "A" ~ "Asian",
+           race_code == "B" ~ "Black",
+           race_code == "I" ~ "Indian American/ Alaskan Native",
+           race_code == "W" ~ "White",
+           race_code == "O" ~ "Other",
+           race_code == "U" ~ "Undesignated",
+           race_code == "M" ~ "Two or More Races",
+           TRUE ~ ""
+         )) %>% 
+  mutate_all(str_trim)
+
+df_mar17_counties <- 
+  counties %>% 
+  map_df(~read_delim(glue("data/ncvote/mar17/ncvoter{.x}.txt"), 
+                     delim = "\t", 
+                     col_types = cols(.default = "c")))%>% 
+  mutate(data = "March 2017",
+         gender = case_when(
+           gender_code == "M" ~ "Male",
+           gender_code == "F" ~ "Female",
+           TRUE ~ "Undesginated"
+         ),
+         race = case_when(
+           race_code == "A" ~ "Asian",
+           race_code == "B" ~ "Black",
+           race_code == "I" ~ "Indian American/ Alaskan Native",
+           race_code == "W" ~ "White",
+           race_code == "O" ~ "Other",
+           race_code == "U" ~ "Undesignated",
+           race_code == "M" ~ "Two or More Races",
+           TRUE ~ ""
+         ))%>% 
+  mutate_all(str_trim)
+
+
+df_counties <- 
+  df_apr13_counties %>% 
+  bind_rows(df_mar17_counties)
+
+(df_join <- 
+  df_apr13_counties %>% 
+  inner_join(df_mar17_counties, by = c("voter_reg_num", "county_id")))
+
+nrow(df_apr13_counties) - nrow(df_join)
+nrow(df_mar17_counties) - nrow(df_join)
+
+df_counties %>% 
+  count(gender) %>% 
+  # group_by(data) %>% 
+  mutate(percent = n/sum(n),
+         gender = fct_infreq(gender)) %>% 
+  ggplot(aes(gender, percent))+
+  geom_col() +
+  labs(y = "Percentage") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = 
+                     function(x) lapply(strwrap(x, width = 20, simplify = FALSE), paste, collapse="\n")) +
+  theme_custom() +
+  theme(axis.title.x = element_blank())
+
+ggsave("R/paper2/plots/gender_dist.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+df_counties %>% 
+  count(race) %>% 
+  arrange(desc(n)) %>% 
+  # group_by(data) %>% 
+  filter(race != "") %>% 
+  mutate(percent = n/sum(n),
+         race = fct_inorder(race)) %>% 
+  ggplot(aes(race, percent))+
+  labs(y = "Percentage") +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = 
+                     function(x) lapply(strwrap(x, width = 20, simplify = FALSE), paste, collapse="\n")) +
+  theme_custom()+
+  theme(axis.title.x = element_blank())
+
+ggsave("R/paper2/plots/race_dist.png", 
+       dpi = 500,
+       width=width+2,
+       height=height)
+
+
+
+df_counties %>% 
+  filter(data == "March 2017") %>% 
+  mutate(age = age %>% str_replace("Age", "Ages")) %>% 
+  ggplot(aes(age)) +
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  labs(y = "Percentage") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_custom()+
+  theme(axis.title.x = element_blank())
+  
+ggsave("R/paper2/plots/age_dist.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+# df_counties %>% 
+#   count(first_name) %>% 
+#   # mutate(n = n/sum(n)) %>% 
+#   ggplot(aes(n)) + 
+#   geom_histogram(bins = 5000) +
+#   scale_x_continuous(limits = c(1, 1000))
+
+```
+
+
+```{r}
+# train_n %in% c(7000)
+# geom_line(data = 
+#             df_tmp %>% 
+#             group_by(train_n, model, metric, error_percent, pct) %>%
+#             summarise_all(mean),
+#           lty = 2) +
+
+
+df_tmp <- 
+  df_metric_list %>% 
+  filter(metric %>% str_detect("review_pct")) %>% 
+  mutate(pct = 
+           (str_extract(metric, one_or_more(DGT)) %>% 
+           as.numeric())/100) %>% 
+  filter(pct %in% c(1, 0.99, 0.95, 0.9),
+         train_n == 7000)
+
+df_tmp %>% 
+  filter(pct == 0.99) %>% 
+  group_by(model) %>% 
+  select(value) %>% 
+  summarise_all(.funs = funs(min, max, mean))
+
+
+df_tmp %>%
+  mutate(pct = pct %>% as.character() %>% fct_inorder(pct)) %>% 
+  ggplot(aes(error_percent, value, color = model, lty = pct)) + #, 
+  geom_smooth(se=T, method="loess") +
+  # geom_point() +
+  # labs(title = "Error rate Versus Review percent at different levels of NPV and PPV") +
+  labs(x = "Heterogeneity Rate", y = "Review Percentage") +
+  scale_x_continuous(breaks = seq(0, .6, .1), labels = scales::percent_format(accuracy = 1)) +
+  facet_wrap(~model, nrow = 3) +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     limits = c(0, 1),
+                     labels = scales::percent_format(accuracy=1)) +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen"), guide = FALSE) +
+  scale_linetype_manual(values = c(3,2,1,4),
+                        labels = c("100%", "99%",
+                                   "95%", "90%"),
+                        name = "NPV/PPV\nrequirement") +
+  theme_light() +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        # axis.title = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(size=15),
+        legend.text = element_text(size=15),
+        title = element_text(size=15),
+        strip.text = element_text(size=12),
+        panel.grid.major.y = element_line(colour = 'gray', size = 0.25)
+        )
+
+
+ggsave("R/paper2/plots/review_pcts.png", 
+       dpi = 500,
+       width=width,
+       height=height+5)
+
+ggsave("R/paper2/plots/review_pcts_ppt.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+
+```
+
+
+## Effect of N on performance
+
+### Effect of N on F1 for different models 
+
+```{r}
+
+df_metric_list %>% 
+  filter(error_percent == 0,
+         metric == "f1") %>%  #review_pct_99
+  group_by(model, train_n) %>% 
+  select(value) %>% 
+  summarise_all(.funs = funs(mean, max, min))
+
+df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         error_percent == 0) %>% 
+  # group_by(train_n, model, metric, error_percent) %>%
+  # summarise_all(mean) %>%
+  ggplot(aes(train_n, value, color = model)) +
+  # geom_line() +
+  # geom_point() +
+  geom_smooth(method="loess") +
+  scale_x_continuous(breaks = seq(1000, 10000, 3000)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0.7, 1, 0.05),
+                     # minor_breaks = seq(0.75, 0.95, 0.05),
+                     limits = c(0.75, 1)) +
+  # labs(title = "Amount of training data Versus F1 score by algorithm") +
+  labs(x = "Size of training data", y = "F1 score") +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/n_f1.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+```
+
+As expected, when the amount of training data is increased, the model performance measured by F1 shows improvement, irrespective of the algorithm. The rate of increase in performance is the highest initially. At n=7000, the performance plateaus and there is not a lot of gains in F1 after that. Also, in line with expectations, at higher error rates, performance is lower than cleaner datasets for the same amount of training data.
+
+
+### Effect of N on review size for different models 
+
+```{r}
+
+df_metric_list %>% 
+  filter(metric %in% c("review_pct_99"),
+         error_percent == 0) %>% 
+  # group_by(train_n, model, metric, error_percent) %>%
+  # summarise_all(mean) %>%
+  ggplot(aes(train_n, value, color = model)) +
+  # geom_line() +
+  geom_smooth() +
+  scale_x_continuous(breaks = seq(1000, 10000, 3000)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0, 0.6, 0.1),
+                     minor_breaks = seq(0.05, 0.55, 0.05),
+                     limits = c(0, 0.6)) +
+  # labs(title = "Amount of training data Versus Review percentage by algorithm") +
+  labs(x = "Size of training data", y = "Percentage of Manual Review") +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/n_review.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+```
+
+The percentage of manual review however is interesting. For neural nets and svm, the review set size remains largely constant as we increase the training data size and any improvement is negligible in comparison with random forests. In random forests, there is a lot of variance in the review size at different training set sizes but the review size improves the most as more training data is added. Also, the review size for different error rates at a given training set size shows a lot of variance unlike with neural nets and svms.  
+```{r}
+aov(value ~ train_n + model + error_percent, 
+    data=
+      df_metric_list %>% 
+      filter(metric %in% c("review_pct_99"))) %>% 
+  summary()
+
+#lm
+```
+
+
+
+## Effect of error rate on performance
+
+```{r}
+
+df_metric_list %>% 
+  filter(train_n == 7000,
+         metric == "review_pct_100") %>%  #
+  group_by(model, error_percent) %>% 
+  select(model, error_percent, value) %>% 
+  summarise_all(.funs = funs(mean, max, min)) %>% 
+  ungroup() %>%
+  select(1:3) %>% 
+  spread(key = model, mean) %>% 
+  clean_names() %>% 
+  mutate(dnn_btr = (dense_neural_net - random_forest)*100/dense_neural_net,
+         svm_btr = (svm_rbf - random_forest)*100/svm_rbf) %>% 
+  print(n = Inf) %>% 
+  summarise_all(mean)
+
+df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         train_n %in% c(7000)) %>% 
+  ggplot(aes(error_percent, value, color = model)) +
+  geom_smooth(se=T, method = "lm") +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, .6, .1), labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0.9, 1, 0.02),
+                     # minor_breaks = seq(0.05, 0.55, 0.05),
+                     limits = c(0.9, 1)
+  ) +
+  # labs(title = "Error rate Versus F1 score by algorithm") +
+  labs(x = "Heterogeneity Rate", y = "F1 score") +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/e_f1.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+df_metric_list %>%
+  filter(metric %in% c("f1"),
+         train_n %in% c(4000, 10000)) %>% 
+  ggplot(aes(model, value, color = model, fill = model)) +
+  geom_boxplot() + 
+  facet_grid(train_n~error_percent) +
+  scale_y_continuous(breaks = seq(0.9, 1, 0.02),
+                     limits = c(0.9, 1),
+                     labels = scales::percent_format(accuracy=1)) +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_minimal()
+
+
+```
+
+It is clear that F1 score goes down as we increase the error rate for all models. However at N=10,000, there is a lot less variation between the performances of different models at various error rates. Even though Random Forests outperform the other 2 algorithms at N=10000, there is barely any difference between them at error rate 0%. At higher error rates, random forest gradually outperform svms and neural nets.  
+
+
+```{r}
+df_metric_list %>% 
+  filter(metric %in% c("recall"),
+         train_n %in% c(7000)) %>% 
+  ggplot(aes(error_percent, value, color = model)) +
+  geom_smooth(se=T, method = "lm") +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, .6, .1), labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0.9, 1, 0.02),
+                     # minor_breaks = seq(0.05, 0.55, 0.05),
+                     limits = c(0.9, 1)
+  ) +
+  # labs(title = "Error rate Versus F1 score by algorithm") +
+  labs(x = "Heterogeneity Rate", y = "Recall") +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/e_recall.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+df_metric_list %>% 
+  filter(metric %in% c("precision"),
+         train_n %in% c(7000)) %>% 
+  ggplot(aes(error_percent, value, color = model)) +
+  geom_smooth(se=T, method = "lm") +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, .6, .1), labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy=1),
+                     breaks = seq(0.9, 1, 0.02),
+                     # minor_breaks = seq(0.05, 0.55, 0.05),
+                     limits = c(0.9, 1)
+  ) +
+  # labs(title = "Error rate Versus F1 score by algorithm") +
+  labs(x = "Heterogeneity Rate", y = "Precision") +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/e_precision.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+
+
+```
+
+
+```{r}
+df_metric_list %>% 
+  filter(metric %in% c("review_pct_99"),
+         train_n %in% c(7000)) %>% 
+  ggplot(aes(error_percent, value, color = model)) +
+  geom_point() +
+  geom_smooth(se=T, method="lm") +
+  # labs(title = "Error rate Versus Review percent by algorithm") +
+  labs(x = "Heterogeneity Rate", y = "Percentage of Manual Review") +
+  scale_x_continuous(breaks = seq(0, .6, .1), labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(breaks = seq(0.05, 0.3, 0.05),
+                     limits = c(0.05, 0.25),
+                     labels = scales::percent_format(accuracy=1)) +
+  scale_color_manual(values = c("blue", "darkred", "forestgreen")) +
+  theme_custom()
+
+ggsave("R/paper2/plots/e_review.png", 
+       dpi = 500,
+       width=width,
+       height=height)
+
+
+df_metric_list %>% 
+  filter(metric %in% c("review_pct_99"),
+         train_n %in% c(4000)) %>% 
+  # group_by(train_n, model, metric, error_percent) %>%
+  # summarise_all(mean) %>%
+  ggplot(aes(model, value, color = model, fill=model)) +
+  geom_boxplot() + 
+  facet_grid(train_n~error_percent) +
+   scale_y_continuous(breaks = seq(0.05, 0.3, 0.05),
+                     limits = c(0.05, 0.3),
+                     labels = scales::percent_format(accuracy=1)) +
+  scale_color_manual(values = c("rf"="forestgreen", "nn"="darkred", "svm"="blue")) +
+  theme_minimal()
+
+
+```
+
+The review size also goes up as error rate increases. Though random forests show a lot of variation in the performance, they always perform better than the other 2 models
+
+# Stat tests
+
+```{r}
+
+        # error_percent:model + 
+        # train_n:model + 
+        # train_n:model:error_percent,
+
+model_anova <- 
+  aov(value ~ 
+        train_n + model + error_percent, 
+    data=
+      df_metric_list %>% 
+      filter(metric %in% c("f1")) %>% 
+      mutate(train_n = train_n %>% as.character() %>% as.factor(),
+             error_percent = error_percent %>% as.character() %>% as.factor()))
+
+model_anova %>% 
+  summary()
+
+lsmeans(model_anova,
+        pairwise ~ model, 
+        adjust="tukey") 
+
+lsmeans(model_anova,
+        pairwise ~ error_percent, 
+        adjust="tukey") 
+
+lsmeans(model_anova,
+        pairwise ~ train_n, 
+        adjust="tukey") 
+
+lsmeans(model_anova,
+        pairwise ~ model:error_percent, 
+        adjust="bonferroni")
+
+res <- 
+  lsmeans(model_anova,
+        pairwise ~ model:error_percent:train_n, 
+        adjust="tukey")
+
+res <- 
+  res$contrasts %>% 
+  as_tibble()
+
+pattern_param <- 
+  "," %R% 
+  DGT %R%
+  zero_or_more(DOT%R%
+  one_or_more(DGT)) %R% 
+  "," %R%
+  one_or_more(DGT)
+  
+
+res_apt <- 
+  res %>% 
+  mutate(param = str_extract(contrast, pattern_param),
+         param_count = str_count(contrast, param %R% 
+                                   or(SPACE, END))) %>% 
+  filter(param_count > 1)
+
+# res_apt %>% 
+#   filter(p.value < 0.05,
+#          contrast %>% str_detect("rf"))
+
+```
+
+```{r}
+
+# t_tests <- 
+#   crossing(error_percent = seq(0,.6,0.05),
+#          train_n = seq(1000, 10000, 3000),
+#          model_1 = c("rf", "nn", "svm"),
+#          model_2 = c("rf", "nn", "svm")) %>% 
+#   arrange(error_percent, train_n) %>% 
+#   mutate(models = map2_chr(model_1, model_2, ~(sort(c(.x, .y)) %>% str_c(collapse = ",")))) %>% 
+#   filter(model_1 != model_2) %>% 
+#   group_by(error_percent, train_n, models) %>% 
+#   slice(1) %>% 
+#   ungroup() %>% 
+#   mutate(p_value = pmap_dbl(list(e = error_percent, 
+#                              n = train_n,
+#                              m1 = model_1,
+#                              m2 = model_2),
+#                         function(e,n,m1,m2){
+#                           df <- 
+#                             df_metric_list %>% 
+#                             filter(metric == "review_pct_99",
+#                                    train_n %>% near(n),
+#                                    error_percent %>% near(e))
+#                           m1_vals <-  
+#                             df %>% 
+#                             filter(model == m1) %>% 
+#                             pull(value)
+#                           
+#                           m2_vals <-  
+#                             df %>% 
+#                             filter(model == m2) %>% 
+#                             pull(value)
+#                           
+#                           
+#                           t_test <- 
+#                             t.test(m1_vals,
+#                             m2_vals, 
+#                             paired=F, 
+#                             conf.level=(1-(.05/3)),
+#                             alternative = "two.sided") 
+#                           
+#                           t_test$p.value
+# 
+#                         }))
+# 
+# t_tests %>% 
+#   filter(p_value > 0.05,
+#          str_detect(models, "rf")) %>% 
+#   count(train_n, error_percent, sort=T)
+# 
+# 
+# t_tests %>% 
+#   filter(p_value < 0.05,
+#          !str_detect(models, "rf"),
+#          train_n == 4000)
+#   # count(str_detect(models, "rf"))
+
+```
+
+
+
+
+
+
+```{r}
+rf_4000 <-  
+  df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         train_n %in% c(10000),
+         error_percent == 0) %>% 
+  filter(model == "rf") %>% 
+  pull(value)
+
+nn_4000 <-  df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         train_n %in% c(10000),
+         error_percent == 0) %>% 
+  filter(model == "nn") %>% 
+  pull(value)
+
+
+t.test(rf_4000,
+       nn_4000, 
+       paired=T, 
+       conf.level=0.95,
+       alternative = "less")
+```
+
+```{r}
+rf_4000 <-  
+  df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         train_n %in% c(10000),
+         error_percent == 0) %>% 
+  filter(model == "svm") %>% 
+  pull(value)
+
+nn_4000 <-  
+  df_metric_list %>% 
+  filter(metric %in% c("f1"),
+         train_n %in% c(10000),
+         error_percent == 0) %>% 
+  filter(model == "nn") %>% 
+  pull(value)
+
+
+t.test(rf_4000,
+       nn_4000, 
+       paired=F, 
+       conf.level=0.95,
+       alternative = "greater")
+
+```
+
+
+
+
+```{r}
+
+
+# df_metric_list %>% 
+#   filter(metric == "f1") %>% 
+#   group_by(train_n, model, metric, error_percent) %>% 
+#   summarise_all(.funs = funs(mean,sd)) %>% 
+#   ungroup() %>% 
+#   mutate_at(c("mean", "sd"), ~round(.x*100, 2)) %>% 
+#   mutate(val = str_c(mean, " \u00B1 ", sd)) %>% 
+#   select(train_n, model, error_percent, val) %>% 
+#   ftable(row.vars = c(3)) %>% 
+#   print()
+
+
+
+df_metric_list %>%
+  filter(metric == "f1") %>%
+  group_by(train_n, model, metric, error_percent) %>%
+  summarise_all(.funs = funs(mean,sd)) %>%
+  ungroup() %>%
+  mutate_at(c("mean", "sd"), ~round(.x*100, 2)) %>%
+  mutate(val = str_c(mean, " \u00B1 ", sd),
+         model = str_c(train_n, "_", model),
+         error_percent = (error_percent*100) %>% str_c("%")) %>%
+  select(error_percent, model, val) %>%
+  spread(model,  val) %>%
+  select(error_percent,
+         starts_with("1000_"),
+         starts_with("4000"),
+         starts_with("7000"),
+         starts_with("10000")) %>% 
+  rename(`Heterogeneity Rate` = error_percent) %>% 
+  write_csv("data/results_standard.csv")
+
+
+
+x <- 
+  df_metric_list %>%
+  filter(metric == "review_pct_90") %>%
+  group_by(train_n, model, metric, error_percent) %>%
+  summarise_all(.funs = funs(mean,sd)) %>%
+  ungroup() %>%
+  mutate_at(c("mean", "sd"), ~round(.x*100, 2)) %>%
+  arrange(train_n, error_percent) %>% 
+  mutate(val = str_c(mean, " +/- ", sd)) %>%
+  select(train_n, error_percent , model, val) 
+
+x %>% 
+  spread(model, val) %>% 
+  mutate(error_percent = (error_percent*100)) %>% # %>% str_c("%")
+  rename(
+    'Training size' = train_n,
+    'Heterogeneity' = error_percent
+  ) %>% 
+    write_csv("data/results_long.csv")
+
+
+pacman::p_load(tables)
+
+x <- 
+  df_metric_list %>%
+  filter(metric == "f1") %>% 
+  group_by(train_n, model, metric, error_percent) %>%
+  summarise_all(.funs = funs(mean,sd))
+
+tabular(
+  (error_percent + 1) ~  (train_n+model)*(mean + sd),
+  data = x)
+
+
+ft <- ftable(x$error_percent, x$train_n, x$model, x$val,
+       row.vars = c(1),
+       col.vars = c(2,3))
+
+xtableFtable(ft)
+
+
+df_best_mod_f1 <- 
+  df_metric_list %>% 
+  filter(metric %in% c("f1")) %>% 
+  group_by(train_n, model, metric, error_percent) %>% 
+  summarise_all(.funs = funs(mean,sd)) %>% 
+  group_by(train_n, metric, error_percent) %>% 
+  filter(mean == max(mean)) %>% 
+  ungroup() 
+
+df_best_mod_f1 %>% 
+  count(model)
+
+df_best_mod_f1 %>% 
+  filter(model != "rf") 
+
+df_metric_list %>% 
+  filter(metric %in% c("f1")) %>% 
+  group_by(train_n, model, metric, error_percent) %>% 
+  summarise_all(.funs = funs(mean,sd)) %>% 
+  ungroup() %>% 
+  ggplot(aes(error_percent, model,  fill=mean)) +
+  geom_tile() +
+  facet_wrap(train_n~.) +
+  scale_fill_viridis_c()
+
+df_best_mod_review <- 
+  df_metric_list %>% 
+  filter(metric %in% c("review_pct_99")) %>% 
+  group_by(train_n, model, metric, error_percent) %>% 
+  summarise_all(mean) %>% 
+  group_by(train_n, metric, error_percent) %>% 
+  filter(value == min(value)) %>% 
+  ungroup() 
+
+df_best_mod_review %>% 
+  count(model)
+
+df_best_mod_review %>% 
+  filter(model != "rf") 
+
+```
+
